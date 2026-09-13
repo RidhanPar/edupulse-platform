@@ -93,6 +93,15 @@ def run_migrations_online():
     connectable = get_engine()
 
     with connectable.connect() as connection:
+        sqlite = connection.dialect.name == 'sqlite'
+        if sqlite:
+            # Batch migrations rebuild SQLite tables by copy, drop and rename. With
+            # foreign keys enforced, dropping a table that other rows reference
+            # fails, so enforcement is paused and integrity re-checked afterwards.
+            # The pragma is ignored inside a transaction, hence the commit.
+            connection.exec_driver_sql('PRAGMA foreign_keys=OFF')
+            connection.commit()
+
         context.configure(
             connection=connection,
             target_metadata=get_metadata(),
@@ -101,6 +110,13 @@ def run_migrations_online():
 
         with context.begin_transaction():
             context.run_migrations()
+
+        if sqlite:
+            violations = connection.exec_driver_sql('PRAGMA foreign_key_check').fetchall()
+            connection.exec_driver_sql('PRAGMA foreign_keys=ON')
+            connection.commit()
+            if violations:
+                raise RuntimeError(f'Migration left foreign key violations: {violations}')
 
 
 if context.is_offline_mode():
