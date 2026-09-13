@@ -1,17 +1,19 @@
 from __future__ import annotations
 
 import os
-import secrets
 from pathlib import Path
 
 import pandas as pd
 from flask import Flask, render_template, request, redirect, url_for, flash, Response
 
+from config import build_config, resolve_env
+from db import db, migrate
 from utils.evaluation import load_importances, load_metrics, load_model_comparison
-from utils.predict import predict_dataframe
-from utils.preprocessing import validate_columns, FEATURE_COLUMNS, TARGET_COLUMN, DISPLAY_COLUMNS
-from utils.train_model import train_and_select_best
-from utils.compare_results import compare_predictions_with_actual
+
+# utils.preprocessing, utils.train_model, utils.predict and utils.compare_results
+# all import scikit-learn (and joblib), which adds seconds to every cold start and
+# test run. They are imported inside the handlers that use them, so create_app()
+# never loads them. tests/test_app_factory.py enforces this.
 
 BASE_DIR = Path(__file__).resolve().parent
 DATA_DIR = BASE_DIR / "data"
@@ -22,10 +24,6 @@ MODEL_PATH = MODELS_DIR / "best_model.pkl"
 TRAIN_UPLOAD_PATH = RAW_DIR / "training_dataset.csv"
 PREDICT_UPLOAD_PATH = RAW_DIR / "prediction_dataset.csv"
 ACTUAL_RESULTS_PATH = RAW_DIR / "actual_results.csv"
-
-app = Flask(__name__)
-app.secret_key = os.environ.get("FLASK_SECRET_KEY", secrets.token_hex(32))
-app.config["MAX_CONTENT_LENGTH"] = 5 * 1024 * 1024
 
 
 def read_csv_flexible(path: Path) -> pd.DataFrame:
@@ -43,6 +41,8 @@ def read_csv_flexible(path: Path) -> pd.DataFrame:
 
 
 def get_training_df(require_target: bool = True):
+    from utils.preprocessing import validate_columns
+
     if not TRAIN_UPLOAD_PATH.exists():
         return None, "No training dataset uploaded yet."
     try:
@@ -56,6 +56,8 @@ def get_training_df(require_target: bool = True):
 
 
 def get_prediction_df():
+    from utils.preprocessing import validate_columns
+
     if not PREDICT_UPLOAD_PATH.exists():
         return None, "No prediction dataset uploaded yet."
     try:
@@ -66,7 +68,7 @@ def get_prediction_df():
         return df, None
     except Exception as e:
         return None, f"Error reading prediction dataset: {str(e)}"
-    
+
 def get_actual_results_df():
     if not ACTUAL_RESULTS_PATH.exists():
         return None, "No actual results dataset uploaded yet."
@@ -81,15 +83,15 @@ def get_actual_results_df():
         return None, f"Error reading actual results dataset: {str(e)}"
 
 
-@app.route("/")
 def home():
     metrics = load_metrics(str(MODELS_DIR))
     comparison = load_model_comparison(str(MODELS_DIR))
     return render_template("home.html", metrics=metrics, comparison=comparison)
 
 
-@app.route("/upload-train", methods=["GET", "POST"])
 def upload_train():
+    from utils.preprocessing import DISPLAY_COLUMNS, FEATURE_COLUMNS, TARGET_COLUMN
+
     preview = None
     columns = None
 
@@ -130,8 +132,9 @@ def upload_train():
     )
 
 
-@app.route("/upload-predict", methods=["GET", "POST"])
 def upload_predict():
+    from utils.preprocessing import DISPLAY_COLUMNS, FEATURE_COLUMNS
+
     preview = None
     columns = None
 
@@ -172,13 +175,14 @@ def upload_predict():
     )
 
 
-@app.route("/train", methods=["GET", "POST"])
 def train():
     metrics = load_metrics(str(MODELS_DIR))
     importances = load_importances(str(MODELS_DIR))
     comparison = load_model_comparison(str(MODELS_DIR))
 
     if request.method == "POST":
+        from utils.train_model import train_and_select_best
+
         df, err = get_training_df(require_target=True)
         if err:
             flash(err, "danger")
@@ -202,8 +206,9 @@ def train():
     )
 
 
-@app.route("/results")
 def results():
+    from utils.predict import predict_dataframe
+
     if not MODEL_PATH.exists():
         flash("Train the model first.", "warning")
         return redirect(url_for("train"))
@@ -257,8 +262,9 @@ def results():
         prediction_filter=prediction_filter
     )
 
-@app.route("/download-results")
 def download_results():
+    from utils.predict import predict_dataframe
+
     if not MODEL_PATH.exists():
         flash("Train the model first.", "warning")
         return redirect(url_for("train"))
@@ -311,7 +317,6 @@ def download_results():
         headers={"Content-Disposition": "attachment; filename=prediction_results.csv"}
     )
 
-@app.route("/explain")
 def explain():
     importances = load_importances(str(MODELS_DIR))
     metrics = load_metrics(str(MODELS_DIR))
@@ -322,11 +327,9 @@ def explain():
     return render_template("explain.html", ranked=ranked, metrics=metrics)
 
 
-@app.route("/about")
 def about():
     return render_template("about.html")
 
-@app.route("/upload-actual", methods=["GET", "POST"])
 def upload_actual():
     preview = None
     columns = None
@@ -367,8 +370,10 @@ def upload_actual():
         required=required
     )
 
-@app.route("/compare")
 def compare():
+    from utils.compare_results import compare_predictions_with_actual
+    from utils.predict import predict_dataframe
+
     if not MODEL_PATH.exists():
         flash("Train the model first.", "warning")
         return render_template("compare.html", records=None, metrics=None)
@@ -394,17 +399,47 @@ def compare():
         )
     except Exception as e:
         flash(f"Comparison failed: {str(e)}", "danger")
-        return render_template("compare.html", records=None, metrics=None)   
-     
-@app.route("/recheck-comparison", methods=["POST"])
+        return render_template("compare.html", records=None, metrics=None)
+
 def recheck_comparison():
     flash("Comparison metrics refreshed using the current prediction and actual results files.", "success")
     return redirect(url_for("compare"))
 
-@app.errorhandler(500)
 def internal_error(error):
     return render_template("error.html", message="An internal server error occurred. Please check your uploaded dataset and try again."), 500
 
 
+def _register_routes(app: Flask) -> None:
+    # Endpoint names default to the view function names, so every url_for()
+    # in the templates resolves exactly as it did with @app.route.
+    app.add_url_rule("/", view_func=home)
+    app.add_url_rule("/upload-train", view_func=upload_train, methods=["GET", "POST"])
+    app.add_url_rule("/upload-predict", view_func=upload_predict, methods=["GET", "POST"])
+    app.add_url_rule("/train", view_func=train, methods=["GET", "POST"])
+    app.add_url_rule("/results", view_func=results)
+    app.add_url_rule("/download-results", view_func=download_results)
+    app.add_url_rule("/explain", view_func=explain)
+    app.add_url_rule("/about", view_func=about)
+    app.add_url_rule("/upload-actual", view_func=upload_actual, methods=["GET", "POST"])
+    app.add_url_rule("/compare", view_func=compare)
+    app.add_url_rule("/recheck-comparison", view_func=recheck_comparison, methods=["POST"])
+    app.register_error_handler(500, internal_error)
+
+
+def create_app(config: dict | None = None, env: str | None = None) -> Flask:
+    """Build the application. Raises config.ConfigError if the environment is unsafe."""
+    app = Flask(__name__)
+    app.config.from_mapping(build_config(resolve_env(env)))
+    if config:
+        app.config.update(config)
+
+    db.init_app(app)
+    migrate.init_app(app, db)
+    _register_routes(app)
+    return app
+
+
 if __name__ == "__main__":
-    app.run(debug=os.environ.get("FLASK_DEBUG", "").lower() == "true")
+    from wsgi import app as application  # exits with a clear message if misconfigured
+
+    application.run(debug=os.environ.get("FLASK_DEBUG", "").lower() == "true")

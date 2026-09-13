@@ -45,13 +45,17 @@ This is a public demonstration application without authentication. Do not upload
 ```bash
 python -m venv .venv
 python -m pip install -r requirements.txt
+export FLASK_ENV=development
+flask --app wsgi db upgrade
 python app.py
 ```
+
+`FLASK_ENV=development` uses a local SQLite database and a generated secret key. Any other value, including leaving it unset, is treated as production: the app refuses to start unless `FLASK_SECRET_KEY` and `DATABASE_URL` are set.
 
 ## Verify
 
 ```bash
-python -m pip install pytest
-pytest -q
-python -m compileall app.py utils tests
+python -m pip install -r requirements-dev.txt
+python -m pytest -q
+python -m compileall app.py config.py wsgi.py db migrations utils tests
 ```
