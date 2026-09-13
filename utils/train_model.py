@@ -1,8 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-import json
-from pathlib import Path
+import io
 
 import joblib
 import numpy as np
@@ -24,6 +23,7 @@ class TrainingArtifacts:
     metrics: dict
     feature_importances: dict
     model_comparison: list[dict]
+    model: Pipeline
 
 
 def _candidate_models() -> dict:
@@ -45,7 +45,7 @@ def _extract_feature_importances(model_obj, feature_names):
     return {col: round(float(v), 4) for col, v in zip(feature_names, vals)}
 
 
-def train_and_select_best(df: pd.DataFrame, model_dir: str) -> TrainingArtifacts:
+def train_and_select_best(df: pd.DataFrame) -> TrainingArtifacts:
     X, y, _ = split_features_target(df)
 
     X_train, X_test, y_train, y_test = train_test_split(
@@ -98,23 +98,17 @@ def train_and_select_best(df: pd.DataFrame, model_dir: str) -> TrainingArtifacts
             best_metrics = metrics
             best_importances = _extract_feature_importances(pipe.named_steps["model"], FEATURE_COLUMNS)
 
-    model_dir = Path(model_dir)
-    model_dir.mkdir(parents=True, exist_ok=True)
-
-    joblib.dump(best_pipe, model_dir / "best_model.pkl")
-    (model_dir / "metrics.json").write_text(
-        json.dumps({"best_model": best_name, **best_metrics}, indent=2), encoding="utf-8"
-    )
-    (model_dir / "feature_importances.json").write_text(
-        json.dumps(best_importances, indent=2), encoding="utf-8"
-    )
-    (model_dir / "model_comparison.json").write_text(
-        json.dumps(comparison_rows, indent=2), encoding="utf-8"
-    )
-
     return TrainingArtifacts(
         model_name=best_name,
         metrics=best_metrics,
         feature_importances=best_importances,
         model_comparison=comparison_rows,
+        model=best_pipe,
     )
+
+
+def serialize_model(model: Pipeline) -> bytes:
+    """Bytes for object storage; utils.predict.load_model reverses this."""
+    buffer = io.BytesIO()
+    joblib.dump(model, buffer)
+    return buffer.getvalue()

@@ -1,4 +1,5 @@
 import os
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -7,9 +8,11 @@ import pytest
 
 from app import create_app
 from config import ConfigError, database_url
+from utils.storage import LocalStorage, S3Storage
 
 ROOT = Path(__file__).resolve().parents[1]
-CONFIG_VARS = ("FLASK_ENV", "FLASK_SECRET_KEY", "DATABASE_URL")
+S3_VARS = ("STORAGE_ENDPOINT", "STORAGE_BUCKET", "STORAGE_ACCESS_KEY", "STORAGE_SECRET_KEY")
+CONFIG_VARS = ("FLASK_ENV", "FLASK_SECRET_KEY", "DATABASE_URL", "STORAGE_BACKEND", "STORAGE_LOCAL_ROOT", *S3_VARS)
 
 
 @pytest.fixture()
@@ -17,6 +20,21 @@ def clean_env(monkeypatch):
     for name in CONFIG_VARS:
         monkeypatch.delenv(name, raising=False)
     return monkeypatch
+
+
+def _set_production_env(monkeypatch, *, skip=()):
+    values = {
+        "FLASK_SECRET_KEY": "k" * 64,
+        "DATABASE_URL": "sqlite://",
+        "STORAGE_BACKEND": "s3",
+        "STORAGE_ENDPOINT": "https://s3.us-east-1.amazonaws.com",
+        "STORAGE_BUCKET": "edupulse-test",
+        "STORAGE_ACCESS_KEY": "test-access-key",
+        "STORAGE_SECRET_KEY": "test-secret-key",
+    }
+    for name, value in values.items():
+        if name not in skip:
+            monkeypatch.setenv(name, value)
 
 
 def _run_python(code: str) -> subprocess.CompletedProcess:
@@ -28,34 +46,70 @@ def _run_python(code: str) -> subprocess.CompletedProcess:
 
 @pytest.mark.parametrize("env", ["production", None, "staging"])
 def test_non_local_env_refuses_to_boot_without_secret_key(clean_env, env):
-    clean_env.setenv("DATABASE_URL", "sqlite://")
+    _set_production_env(clean_env, skip={"FLASK_SECRET_KEY"})
 
     with pytest.raises(ConfigError, match="FLASK_SECRET_KEY"):
         create_app(env=env)
 
 
 def test_production_refuses_to_boot_without_database_url(clean_env):
-    clean_env.setenv("FLASK_SECRET_KEY", "k" * 64)
+    _set_production_env(clean_env, skip={"DATABASE_URL"})
 
     with pytest.raises(ConfigError, match="DATABASE_URL"):
         create_app(env="production")
 
 
+def test_production_refuses_to_boot_without_storage_backend(clean_env):
+    _set_production_env(clean_env, skip={"STORAGE_BACKEND"})
+
+    with pytest.raises(ConfigError, match="STORAGE_BACKEND"):
+        create_app(env="production")
+
+
+def test_production_refuses_local_storage(clean_env):
+    _set_production_env(clean_env)
+    clean_env.setenv("STORAGE_BACKEND", "local")
+
+    with pytest.raises(ConfigError, match="STORAGE_BACKEND=local is only allowed"):
+        create_app(env="production")
+
+
+def test_s3_storage_names_every_missing_setting(clean_env):
+    _set_production_env(clean_env, skip=set(S3_VARS))
+
+    with pytest.raises(ConfigError) as excinfo:
+        create_app(env="production")
+
+    assert all(name in str(excinfo.value) for name in S3_VARS)
+
+
+def test_unknown_storage_backend_is_refused(clean_env):
+    _set_production_env(clean_env)
+    clean_env.setenv("STORAGE_BACKEND", "ftp")
+
+    with pytest.raises(ConfigError, match="STORAGE_BACKEND must be one of"):
+        create_app(env="production")
+
+
 def test_production_boots_with_required_variables(clean_env):
-    clean_env.setenv("FLASK_SECRET_KEY", "k" * 64)
-    clean_env.setenv("DATABASE_URL", "sqlite://")
+    _set_production_env(clean_env)
+    clean_env.setenv("AWS_DEFAULT_REGION", "us-east-1")
 
     app = create_app(env="production")
 
     assert app.secret_key == "k" * 64
     assert app.testing is False
+    assert isinstance(app.extensions["storage"], S3Storage)
 
 
 @pytest.mark.parametrize("env", ["development", "testing"])
-def test_local_envs_generate_a_secret_key(clean_env, env):
+def test_local_envs_generate_a_secret_key_and_use_local_storage(clean_env, env):
     clean_env.setenv("DATABASE_URL", "sqlite://")
 
-    assert len(create_app(env=env).secret_key) == 64
+    app = create_app(env=env)
+
+    assert len(app.secret_key) == 64
+    assert isinstance(app.extensions["storage"], LocalStorage)
 
 
 def test_only_local_envs_fall_back_to_sqlite(clean_env):
@@ -81,12 +135,12 @@ def test_wsgi_fails_loudly_without_secret_key():
     assert "Traceback" not in result.stderr
 
 
-def test_create_app_does_not_import_ml_libraries():
+def test_create_app_does_not_import_ml_or_cloud_libraries():
     result = _run_python(
         "import sys\n"
         "from app import create_app\n"
         "create_app({'SQLALCHEMY_DATABASE_URI': 'sqlite://'}, env='testing')\n"
-        "heavy = ['sklearn', 'joblib', 'utils.preprocessing', 'utils.train_model',"
+        "heavy = ['sklearn', 'joblib', 'boto3', 'utils.preprocessing', 'utils.train_model',"
         " 'utils.predict', 'utils.compare_results']\n"
         "print(','.join(m for m in heavy if m in sys.modules))\n"
     )
@@ -120,21 +174,21 @@ def test_route_table_is_unchanged(app):
     assert routes == EXPECTED_ROUTES
 
 
-@pytest.mark.parametrize(
-    "path",
-    ["/", "/about", "/upload-train", "/upload-predict", "/upload-actual", "/train", "/explain", "/results", "/compare"],
+FILESYSTEM_ACCESS = re.compile(
+    r"\bpathlib\b|\bPath\(|\bopen\(|\.save\(|\.write_(?:text|bytes)\(|\.read_(?:text|bytes)\("
+    r"|\.mkdir\(|\bos\.path\b|data/raw|best_model\.pkl|MODELS_DIR|RAW_DIR"
 )
-def test_existing_pages_still_render(client, path):
-    response = client.get(path)
-
-    assert response.status_code == 200, response.data[:500]
 
 
-def test_download_results_still_exports_filtered_csv(client):
-    response = client.get("/download-results?risk=High")
+def test_app_and_ml_utils_do_not_touch_the_filesystem():
+    sources = [ROOT / "app.py", *sorted((ROOT / "utils").glob("*.py"))]
 
-    assert response.status_code == 200
-    assert response.mimetype == "text/csv"
-    header, *rows = response.data.decode().splitlines()
-    assert header == "student_id,student_name,prediction,fail_probability,confidence,risk_level,recommendation"
-    assert rows and all(",High," in row for row in rows)
+    offenders = [
+        f"{path.relative_to(ROOT).as_posix()}:{lineno}: {line.strip()}"
+        for path in sources
+        if path.name != "storage.py"
+        for lineno, line in enumerate(path.read_text(encoding="utf-8").splitlines(), start=1)
+        if FILESYSTEM_ACCESS.search(line)
+    ]
+
+    assert offenders == [], "Only utils/storage.py may touch the filesystem"

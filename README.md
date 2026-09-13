@@ -50,7 +50,7 @@ flask --app wsgi db upgrade
 python app.py
 ```
 
-`FLASK_ENV=development` uses a local SQLite database and a generated secret key. Any other value, including leaving it unset, is treated as production: the app refuses to start unless `FLASK_SECRET_KEY` and `DATABASE_URL` are set.
+`FLASK_ENV=development` uses a local SQLite database, a generated secret key and file storage under `var/storage/`. Any other value, including leaving it unset, is treated as production: the app refuses to start unless `FLASK_SECRET_KEY`, `DATABASE_URL`, `STORAGE_BACKEND=s3`, `STORAGE_ENDPOINT`, `STORAGE_BUCKET`, `STORAGE_ACCESS_KEY` and `STORAGE_SECRET_KEY` are set.
 
 ## Verify
 

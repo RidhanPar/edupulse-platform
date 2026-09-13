@@ -1,22 +1,16 @@
+"""Evaluation outputs of a trained model, read from its ModelArtifact record."""
 from __future__ import annotations
 
-import json
-from pathlib import Path
 
-
-def _load_json(path: Path):
-    if not path.exists():
+def load_metrics(artifact) -> dict | None:
+    if artifact is None:
         return None
-    return json.loads(path.read_text(encoding="utf-8"))
+    return {"best_model": artifact.algorithm_name, **artifact.metrics}
 
 
-def load_metrics(model_dir: str) -> dict | None:
-    return _load_json(Path(model_dir) / "metrics.json")
+def load_importances(artifact) -> dict | None:
+    return artifact.feature_importances if artifact is not None else None
 
 
-def load_importances(model_dir: str) -> dict | None:
-    return _load_json(Path(model_dir) / "feature_importances.json")
-
-
-def load_model_comparison(model_dir: str) -> list[dict] | None:
-    return _load_json(Path(model_dir) / "model_comparison.json")
+def load_model_comparison(artifact) -> list[dict] | None:
+    return artifact.model_comparison if artifact is not None else None

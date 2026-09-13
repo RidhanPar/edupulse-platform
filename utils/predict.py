@@ -1,13 +1,23 @@
 from __future__ import annotations
 
+import io
+
 import joblib
 import pandas as pd
 
 from utils.preprocessing import FEATURE_COLUMNS, DISPLAY_COLUMNS, risk_from_probability, recommendation_from_row
 
 
-def predict_dataframe(df: pd.DataFrame, model_path: str) -> pd.DataFrame:
-    model = joblib.load(model_path)
+def load_model(data: bytes):
+    """Reverse utils.train_model.serialize_model.
+
+    joblib.load unpickles, which can execute code: only pass bytes this application
+    wrote to its own storage, fetched through TenantStorage.
+    """
+    return joblib.load(io.BytesIO(data))
+
+
+def predict_dataframe(df: pd.DataFrame, model) -> pd.DataFrame:
     X = df[FEATURE_COLUMNS].copy()
 
     preds = model.predict(X)

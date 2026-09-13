@@ -6,7 +6,7 @@ import pytest
 from werkzeug.exceptions import NotFound
 
 from db import db
-from db.models import AuditEvent, Dataset, DatasetKind, ModelArtifact, Organisation
+from db.models import AuditEvent, Dataset, DatasetKind, ModelArtifact, Organisation, utcnow
 from db.tenancy import TenancyError, scoped_get, scoped_get_or_404, scoped_select
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -74,6 +74,30 @@ def test_scoped_get_accepts_string_ids_and_ignores_malformed_ones(tenants):
     assert scoped_get(Dataset, org_a.id, "not-a-uuid") is None
 
 
+def test_soft_deleted_rows_are_excluded_unless_explicitly_included(tenants):
+    (org_a, rows_a), _ = tenants
+    dataset = rows_a[Dataset]
+    dataset.deleted_at = utcnow()
+    db.session.commit()
+
+    assert db.session.scalars(scoped_select(Dataset, org_a.id)).all() == []
+    assert scoped_get(Dataset, org_a.id, dataset.id) is None
+    with pytest.raises(NotFound):
+        scoped_get_or_404(Dataset, org_a.id, dataset.id)
+
+    assert db.session.scalars(scoped_select(Dataset, org_a.id, include_deleted=True)).all() == [dataset]
+    assert scoped_get(Dataset, org_a.id, dataset.id, include_deleted=True) is dataset
+    assert scoped_get_or_404(Dataset, org_a.id, dataset.id, include_deleted=True) is dataset
+
+
+def test_include_deleted_never_crosses_organisations(tenants):
+    (org_a, _), (_, rows_b) = tenants
+    rows_b[Dataset].deleted_at = utcnow()
+    db.session.commit()
+
+    assert scoped_get(Dataset, org_a.id, rows_b[Dataset].id, include_deleted=True) is None
+
+
 def test_audit_events_without_organisation_are_never_returned(tenants):
     (org_a, _), _ = tenants
     db.session.add(AuditEvent(organisation_id=None, action="login_failure"))
@@ -96,7 +120,7 @@ def test_non_tenant_models_are_refused(app):
 
 
 HAND_WRITTEN_FILTER = re.compile(r"organisation_id\s*==|filter_by\([^)]*organisation_id")
-SKIPPED_DIRS = {".git", ".venv", "venv", "tests", "migrations", "instance"}
+SKIPPED_DIRS = {".git", ".venv", "venv", "tests", "migrations", "instance", "var"}
 
 
 def test_no_hand_written_organisation_filters():

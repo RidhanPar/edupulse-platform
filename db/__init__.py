@@ -36,4 +36,6 @@ def _enable_sqlite_foreign_keys(dbapi_connection, connection_record):
         cursor.close()
 
 
-from db import models  # noqa: E402,F401  (registers the tables on the metadata)
+# Register the tables on the metadata, then the append-only guard on audit_events.
+from db import models  # noqa: E402,F401
+from db import audit  # noqa: E402,F401

@@ -12,13 +12,25 @@ import uuid
 from datetime import datetime, timezone
 
 from sqlalchemy import JSON, Boolean, DateTime, Enum, ForeignKey, Index, Integer, String, Uuid, event, text, true
-from sqlalchemy.orm import Mapped, ORMExecuteState, Session, mapped_column, relationship
+from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from db import db
 
-# Default storage limit for uploaded datasets, per GDPR Article 5(1)(e). To become
-# a per-organisation setting; the purge job that acts on it is not built yet.
+# Default storage limit for uploaded datasets, per GDPR Article 5(1)(e). The purge
+# job that acts on it is not built yet.
+# TODO: make this a per-organisation column. Institutions negotiate retention
+# contractually and some will require a shorter period than this default.
 DATASET_RETENTION_MONTHS = 24
+
+# Audit log retention. Rows are kept for AUDIT_RETENTION_MONTHS; the personal fields
+# (ip_address, user_agent) are nulled after AUDIT_PERSONAL_DATA_RETENTION_DAYS by
+# db.audit.redact_expired_audit_personal_data. Neither job is scheduled yet.
+AUDIT_RETENTION_MONTHS = 24
+AUDIT_PERSONAL_DATA_RETENTION_DAYS = 90
+AUDIT_PERSONAL_DATA_COMMENT = (
+    f"Personal data: nulled {AUDIT_PERSONAL_DATA_RETENTION_DAYS} days after created_at. "
+    f"The audit row itself is kept {AUDIT_RETENTION_MONTHS} months."
+)
 
 
 def utcnow() -> datetime:
@@ -115,6 +127,7 @@ class Dataset(db.Model):
     id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
     organisation_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("organisations.id"))
     kind: Mapped[DatasetKind] = mapped_column(_enum(DatasetKind, "dataset_kind"))
+    # For display only. Never used to build a storage key or path.
     original_filename: Mapped[str] = mapped_column(String(255))
     storage_key: Mapped[str] = mapped_column(String(512), unique=True)
     row_count: Mapped[int] = mapped_column(Integer)
@@ -123,7 +136,7 @@ class Dataset(db.Model):
     uploaded_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     # Set on insert to uploaded_at + DATASET_RETENTION_MONTHS unless given explicitly.
     retention_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
-    # Soft-delete marker for the future retention purge.
+    # Soft-delete marker. Tenant-scoped queries exclude these rows by default.
     deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), index=True)
 
 
@@ -161,7 +174,7 @@ class ModelArtifact(db.Model):
 
 
 class AuditEvent(db.Model):
-    """Append-only: rows are inserted, never updated or deleted."""
+    """Append-only, enforced in db/audit.py. See the retention constants above."""
 
     __tablename__ = "audit_events"
     __table_args__ = (
@@ -176,29 +189,8 @@ class AuditEvent(db.Model):
     action: Mapped[str] = mapped_column(String(64))
     entity_type: Mapped[str | None] = mapped_column(String(64))
     entity_id: Mapped[str | None] = mapped_column(String(64))
-    ip_address: Mapped[str | None] = mapped_column(String(45))
-    user_agent: Mapped[str | None] = mapped_column(String(512))
+    ip_address: Mapped[str | None] = mapped_column(String(45), comment=AUDIT_PERSONAL_DATA_COMMENT)
+    user_agent: Mapped[str | None] = mapped_column(String(512), comment=AUDIT_PERSONAL_DATA_COMMENT)
     # Structured context, e.g. the row count and applied filters of an export.
     details: Mapped[dict | None] = mapped_column(JSON)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
-
-
-class AppendOnlyViolation(RuntimeError):
-    """Raised when code tries to modify or remove an audit record."""
-
-
-@event.listens_for(AuditEvent, "before_update")
-def _refuse_audit_update(mapper, connection, target: AuditEvent) -> None:
-    raise AppendOnlyViolation("audit_events is append-only: rows cannot be updated")
-
-
-@event.listens_for(AuditEvent, "before_delete")
-def _refuse_audit_delete(mapper, connection, target: AuditEvent) -> None:
-    raise AppendOnlyViolation("audit_events is append-only: rows cannot be deleted")
-
-
-@event.listens_for(Session, "do_orm_execute")
-def _refuse_bulk_audit_changes(state: ORMExecuteState) -> None:
-    # Bulk update()/delete() statements bypass the per-row mapper events above.
-    if (state.is_update or state.is_delete) and any(m.class_ is AuditEvent for m in state.all_mappers):
-        raise AppendOnlyViolation("audit_events is append-only: bulk UPDATE and DELETE are refused")

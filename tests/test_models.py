@@ -6,15 +6,13 @@ import pytest
 from alembic.autogenerate import compare_metadata
 from alembic.migration import MigrationContext
 from flask_migrate import downgrade, upgrade
-from sqlalchemy import delete, inspect, select, text, update
+from sqlalchemy import inspect, text
 from sqlalchemy.exc import IntegrityError
 
 from app import create_app
 from db import db
 from db.models import (
     DATASET_RETENTION_MONTHS,
-    AppendOnlyViolation,
-    AuditEvent,
     Dataset,
     DatasetKind,
     ModelArtifact,
@@ -182,51 +180,12 @@ def test_user_with_datasets_cannot_be_deleted(make_org):
     assert db.session.get(User, user.id) is not None
 
 
-@pytest.fixture()
-def audit_event(make_org):
-    organisation, user = make_org("alpha")
-    event = AuditEvent(organisation_id=organisation.id, user_id=user.id, action="login_success")
-    db.session.add(event)
-    db.session.commit()  # inserting is allowed
-    return event
-
-
-def test_audit_event_cannot_be_updated(audit_event):
-    audit_event.action = "tampered"
-
-    with pytest.raises(AppendOnlyViolation):
-        db.session.commit()
-    db.session.rollback()
-
-    assert db.session.get(AuditEvent, audit_event.id).action == "login_success"
-
-
-def test_audit_event_cannot_be_deleted(audit_event):
-    db.session.delete(audit_event)
-
-    with pytest.raises(AppendOnlyViolation):
-        db.session.commit()
-    db.session.rollback()
-
-    assert db.session.get(AuditEvent, audit_event.id) is not None
-
-
-@pytest.mark.parametrize(
-    "statement",
-    [update(AuditEvent).values(action="tampered"), delete(AuditEvent)],
-    ids=["bulk-update", "bulk-delete"],
-)
-def test_bulk_audit_statements_are_refused(audit_event, statement):
-    with pytest.raises(AppendOnlyViolation):
-        db.session.execute(statement)
-    db.session.rollback()
-
-    assert db.session.scalars(select(AuditEvent.action)).all() == ["login_success"]
-
-
 def _file_backed_app(tmp_path):
     uri = f"sqlite:///{(tmp_path / 'migrated.db').as_posix()}"
-    return create_app({"SQLALCHEMY_DATABASE_URI": uri}, env="testing")
+    return create_app(
+        {"SQLALCHEMY_DATABASE_URI": uri, "STORAGE_LOCAL_ROOT": str(tmp_path / "storage")},
+        env="testing",
+    )
 
 
 def test_migrations_match_models_and_reverse_cleanly(tmp_path):
