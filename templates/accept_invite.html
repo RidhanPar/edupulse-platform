@@ -1,0 +1,20 @@
+{% extends 'base.html' %}
+{% block title %}EduPulse | Set your password{% endblock %}
+{% block content %}
+<div class="card auth-card">
+  <h1>Set your password</h1>
+  <p class="small">Choose a password for <strong>{{ email }}</strong>. This link works once.</p>
+  {% for field, errors in form.errors.items() %}{% for error in errors %}
+  <div class="flash flash-danger">{{ error }}</div>
+  {% endfor %}{% endfor %}
+  <form method="post" class="auth-form">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+    <input type="text" name="username" value="{{ email }}" autocomplete="username" hidden>
+    <label for="password">New password</label>
+    {{ form.password(id="password", autocomplete="new-password", required=True, minlength=12) }}
+    <label for="confirm">Confirm new password</label>
+    {{ form.confirm(id="confirm", autocomplete="new-password", required=True, minlength=12) }}
+    <button class="btn" type="submit">Set password</button>
+  </form>
+</div>
+{% endblock %}

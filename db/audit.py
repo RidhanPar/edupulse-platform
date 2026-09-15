@@ -15,6 +15,7 @@ from __future__ import annotations
 import re
 from datetime import datetime, timedelta
 
+from flask import has_request_context, request
 from sqlalchemy import event, null, update
 from sqlalchemy.engine import Engine
 
@@ -69,3 +70,35 @@ def redact_expired_audit_personal_data(now: datetime | None = None) -> int:
         .execution_options(**{_GRANT_OPTION: _REDACTION_GRANT})
     )
     return db.session.execute(statement).rowcount
+
+
+def record_audit_event(
+    action: str,
+    *,
+    user=None,
+    organisation_id=None,
+    entity_type: str | None = None,
+    entity_id=None,
+    details: dict | None = None,
+) -> AuditEvent:
+    """Add an audit row to the current session; the caller commits.
+
+    Passing `user` records both their user_id and organisation_id. The request's IP
+    address and user agent are captured when there is a request.
+    """
+    ip_address = user_agent = None
+    if has_request_context():
+        ip_address = request.remote_addr
+        user_agent = (request.user_agent.string or None) and request.user_agent.string[:512]
+    event = AuditEvent(
+        organisation_id=user.organisation_id if user is not None else organisation_id,
+        user_id=user.id if user is not None else None,
+        action=action,
+        entity_type=entity_type,
+        entity_id=str(entity_id) if entity_id is not None else None,
+        ip_address=ip_address,
+        user_agent=user_agent,
+        details=details,
+    )
+    db.session.add(event)
+    return event

@@ -10,18 +10,32 @@
   <nav class="topnav">
     <div class="topnav-inner">
       <div class="brand">EduPulse</div>
+      {% if current_user.is_authenticated %}
       <div class="nav-links">
         <a href="{{ url_for('home') }}">Home</a>
-        <a href="{{ url_for('upload_train') }}">Upload Train Data</a>
+        {% if user_has_role('staff') %}<a href="{{ url_for('upload_train') }}">Upload Train Data</a>{% endif %}
         <a href="{{ url_for('train') }}">Train & Evaluate</a>
-        <a href="{{ url_for('upload_predict') }}">Upload Predict Data</a>
+        {% if user_has_role('staff') %}<a href="{{ url_for('upload_predict') }}">Upload Predict Data</a>{% endif %}
         <a href="{{ url_for('results') }}">Results</a>
-        <a href="{{ url_for('upload_actual') }}">Upload Actual Results</a>
+        {% if user_has_role('staff') %}<a href="{{ url_for('upload_actual') }}">Upload Actual Results</a>{% endif %}
         <a href="{{ url_for('compare') }}">Compare Results</a>
         <a href="{{ url_for('explain') }}">Explain</a>
         <a href="{{ url_for('about') }}">About</a>
       </div>
+      {% endif %}
     </div>
+    {% if current_user.is_authenticated %}
+    <div class="account-bar">
+      <div class="account-bar-inner">
+        <span>{{ current_user.email }} · {{ current_user.organisation.name }} · {{ current_user.role.value|capitalize }}</span>
+        <a href="{{ url_for('auth.change_password') }}">Change password</a>
+        <form method="post" action="{{ url_for('auth.logout') }}">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+          <button type="submit" class="link-button">Log out</button>
+        </form>
+      </div>
+    </div>
+    {% endif %}
   </nav>
 
   <main class="container">

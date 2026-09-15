@@ -9,7 +9,11 @@
     outcomes, and support early academic intervention.
   </p>
   <div class="hero-actions">
+    {% if user_has_role('staff') %}
     <a class="btn" href="{{ url_for('upload_train') }}">Start Workflow</a>
+    {% else %}
+    <a class="btn" href="{{ url_for('results') }}">View Results</a>
+    {% endif %}
     <a class="btn btn-secondary" href="{{ url_for('about') }}">Learn More</a>
   </div>
 </div>

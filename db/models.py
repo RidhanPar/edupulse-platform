@@ -11,7 +11,21 @@ import enum
 import uuid
 from datetime import datetime, timezone
 
-from sqlalchemy import JSON, Boolean, DateTime, Enum, ForeignKey, Index, Integer, String, Uuid, event, text, true
+from sqlalchemy import (
+    JSON,
+    Boolean,
+    DateTime,
+    Enum,
+    ForeignKey,
+    Index,
+    Integer,
+    LargeBinary,
+    String,
+    Uuid,
+    event,
+    text,
+    true,
+)
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from db import db
@@ -116,6 +130,18 @@ class User(db.Model):
 
     organisation: Mapped[Organisation] = relationship(back_populates="users")
 
+    # Flask-Login interface; is_active is the column above.
+    @property
+    def is_authenticated(self) -> bool:
+        return True
+
+    @property
+    def is_anonymous(self) -> bool:
+        return False
+
+    def get_id(self) -> str:
+        return str(self.id)
+
 
 class Dataset(db.Model):
     __tablename__ = "datasets"
@@ -194,3 +220,16 @@ class AuditEvent(db.Model):
     # Structured context, e.g. the row count and applied filters of an export.
     details: Mapped[dict | None] = mapped_column(JSON)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class UserSession(db.Model):
+    """Server-side session store for auth.sessions. Opaque session data, not tenant data."""
+
+    __tablename__ = "user_sessions"
+
+    session_id: Mapped[str] = mapped_column(String(255), primary_key=True)
+    data: Mapped[bytes] = mapped_column(LargeBinary)
+    expiry: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+    # Copied from the session's login so all of a user's sessions can be revoked together.
+    # Not a foreign key: this table is a cache of logins, not a record about the user.
+    user_id: Mapped[uuid.UUID | None] = mapped_column(Uuid, index=True)

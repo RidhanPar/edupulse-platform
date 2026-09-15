@@ -13,9 +13,10 @@
 
 <div class="card">
   <div class="hero-actions">
-    <a class="btn btn-secondary" href="{{ url_for('upload_actual') }}">Upload Actual Results</a>
+    {% if user_has_role('staff') %}<a class="btn btn-secondary" href="{{ url_for('upload_actual') }}">Upload Actual Results</a>{% endif %}
     <a class="btn btn-secondary" href="{{ url_for('results') }}">View Predictions</a>
     <form method="post" action="{{ url_for('recheck_comparison') }}" style="display:inline;">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
       <button class="btn" type="submit">Re-evaluate Current Comparison</button>
     </form>
   </div>

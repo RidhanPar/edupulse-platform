@@ -1,0 +1,19 @@
+{% extends 'base.html' %}
+{% block title %}EduPulse | Log in{% endblock %}
+{% block content %}
+<div class="card auth-card">
+  <h1>Log in</h1>
+  {% for field, errors in form.errors.items() %}{% for error in errors %}
+  <div class="flash flash-danger">{{ error }}</div>
+  {% endfor %}{% endfor %}
+  <form method="post" class="auth-form">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+    <label for="email">Email</label>
+    {{ form.email(id="email", autocomplete="username", required=True, autofocus=True) }}
+    <label for="password">Password</label>
+    {{ form.password(id="password", autocomplete="current-password", required=True) }}
+    <button class="btn" type="submit">Log in</button>
+  </form>
+  <p class="small">Accounts are created by your organisation's owner.</p>
+</div>
+{% endblock %}

@@ -10,11 +10,6 @@ from db.models import Dataset, DatasetKind, ModelArtifact
 from db.tenancy import scoped_select
 from utils.storage import KEY_PATTERN, dataset_key, model_key, storage_for
 
-ALL_PAGES = [
-    "/", "/about", "/upload-train", "/upload-predict", "/upload-actual",
-    "/train", "/explain", "/results", "/compare", "/download-results",
-]
-
 
 def _with_marker(data: bytes, column: int, marker: str) -> bytes:
     """Replace one value in the first data row, so a page can be checked for whose data it shows."""
@@ -28,25 +23,17 @@ def _datasets(organisation, include_deleted=False) -> list[Dataset]:
     return db.session.scalars(scoped_select(Dataset, organisation.id, include_deleted=include_deleted)).all()
 
 
-@pytest.mark.parametrize("path", ALL_PAGES)
-def test_requests_without_a_user_are_refused(client, path):
-    assert client.get(path).status_code == 401
-
-
-def test_requests_from_a_deactivated_user_are_refused(tenant):
+@pytest.mark.parametrize("suspend", ["user", "organisation"])
+def test_access_ends_on_the_next_request_after_deactivation(tenant, suspend):
     alpha = tenant("alpha")
-    alpha.user.is_active = False
+    assert alpha.client.get("/").status_code == 200
+    target = alpha.user if suspend == "user" else alpha.organisation
+    target.is_active = False
     db.session.commit()
 
-    assert alpha.client.get("/").status_code == 401
+    response = alpha.client.get("/")
 
-
-def test_requests_from_a_suspended_organisation_are_refused(tenant):
-    alpha = tenant("alpha")
-    alpha.organisation.is_active = False
-    db.session.commit()
-
-    assert alpha.client.get("/").status_code == 401
+    assert response.status_code == 302 and response.headers["Location"].startswith("/login")
 
 
 def test_upload_stores_the_file_under_the_organisations_namespace(tenant, upload, csv_fixtures):

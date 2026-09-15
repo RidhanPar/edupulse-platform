@@ -363,6 +363,85 @@ tbody tr:hover {
   margin-top: 18px;
 }
 
+.account-bar {
+  border-top: 1px solid rgba(255,255,255,0.08);
+}
+
+.account-bar-inner {
+  max-width: var(--max-width);
+  margin: 0 auto;
+  padding: 8px 20px;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 16px;
+  color: rgba(255,255,255,0.72);
+  font-size: 0.9rem;
+}
+
+.account-bar-inner form {
+  margin: 0;
+}
+
+.account-bar-inner a,
+.link-button {
+  color: rgba(255,255,255,0.92);
+  font-weight: 600;
+}
+
+.link-button {
+  background: none;
+  border: none;
+  padding: 0;
+  font: inherit;
+  cursor: pointer;
+}
+
+.account-bar-inner a:hover,
+.link-button:hover {
+  color: #ffffff;
+  text-decoration: underline;
+}
+
+.auth-card {
+  max-width: 460px;
+  margin: 40px auto 0;
+}
+
+.auth-card h1 {
+  margin: 0 0 12px;
+  font-size: 1.8rem;
+  letter-spacing: -0.03em;
+}
+
+.auth-form {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: 16px 0;
+}
+
+.auth-form label {
+  margin-top: 6px;
+  font-weight: 600;
+  font-size: 0.95rem;
+}
+
+.auth-form input[type="password"] {
+  min-height: 46px;
+  padding: 10px 14px;
+  border: 1px solid var(--border-strong);
+  border-radius: 12px;
+  background: #fff;
+  font-size: 0.96rem;
+  color: var(--text);
+}
+
+.auth-form .btn {
+  margin-top: 14px;
+}
+
 @media (max-width: 1100px) {
   .card-grid > .card {
     grid-column: span 6;

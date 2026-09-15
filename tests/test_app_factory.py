@@ -161,10 +161,16 @@ EXPECTED_ROUTES = {
     ("/upload-actual", "upload_actual", frozenset({"GET", "POST"})),
     ("/compare", "compare", frozenset({"GET"})),
     ("/recheck-comparison", "recheck_comparison", frozenset({"POST"})),
+    # Added with authentication:
+    ("/login", "auth.login", frozenset({"GET", "POST"})),
+    ("/logout", "auth.logout", frozenset({"POST"})),
+    ("/change-password", "auth.change_password", frozenset({"GET", "POST"})),
+    ("/invite/<token>", "auth.invite", frozenset({"GET", "POST"})),
+    ("/healthz", "healthz", frozenset({"GET"})),
 }
 
 
-def test_route_table_is_unchanged(app):
+def test_route_table_keeps_every_original_route(app):
     routes = {
         (rule.rule, rule.endpoint, frozenset(rule.methods - {"HEAD", "OPTIONS"}))
         for rule in app.url_map.iter_rules()

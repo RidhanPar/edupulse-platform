@@ -10,6 +10,7 @@
 <div class="card">
   <p><strong>Required columns:</strong> {{ required|join(', ') }}</p>
   <form method="post" enctype="multipart/form-data" class="upload-form">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
     <input type="file" name="file" accept=".csv" required>
     <button class="btn" type="submit">Upload Training CSV</button>
   </form>

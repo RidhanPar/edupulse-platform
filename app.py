@@ -5,13 +5,18 @@ import os
 import uuid
 
 import pandas as pd
-from flask import Flask, render_template, request, redirect, url_for, flash, Response, abort, g, session
+from flask import Flask, render_template, request, redirect, url_for, flash, Response, current_app
+from flask_login import current_user
+from sqlalchemy import text
 
+from auth import check_route_roles, init_auth
+from auth.roles import require_role
 from config import build_config, resolve_env
 from db import db, migrate
-from db.models import Dataset, DatasetKind, ModelArtifact, User
+from db.models import Dataset, DatasetKind, ModelArtifact, Role
 from db.tenancy import scoped_select
 from utils.evaluation import load_importances, load_metrics, load_model_comparison
+from utils.model_cache import ModelCache
 from utils.storage import build_backend, dataset_key, model_key, storage_for
 
 # utils.preprocessing, utils.train_model, utils.predict and utils.compare_results
@@ -34,30 +39,8 @@ def read_csv_flexible(data: bytes) -> pd.DataFrame:
         return df
 
 
-def _session_user() -> User | None:
-    try:
-        user_id = uuid.UUID(str(session.get("_user_id")))
-    except ValueError:
-        return None
-    user = db.session.get(User, user_id)
-    if user is None or not user.is_active or not user.organisation.is_active:
-        return None
-    return user
-
-
-def _load_request_user():
-    # Stand-in until section 3 adds Flask-Login, reading the same "_user_id" session
-    # key. Without an active user in an active organisation there is no tenant, so
-    # the request is refused rather than served from some default organisation.
-    if request.endpoint in (None, "static"):
-        return
-    g.user = _session_user()
-    if g.user is None:
-        abort(401)
-
-
 def current_organisation_id():
-    return g.user.organisation_id
+    return current_user.organisation_id
 
 
 def _latest_dataset(kind: DatasetKind) -> Dataset | None:
@@ -88,7 +71,7 @@ def _store_upload(file, kind: DatasetKind) -> Dataset:
         storage_key=dataset_key(organisation_id, dataset_id),
         row_count=int(len(df)),
         column_names=[str(column) for column in df.columns],
-        uploaded_by=g.user.id,
+        uploaded_by=current_user.id,
     )
     storage_for(organisation_id).put(dataset.storage_key, data)
     db.session.add(dataset)
@@ -105,7 +88,13 @@ def _active_model() -> ModelArtifact | None:
 def _load_model(artifact: ModelArtifact):
     from utils.predict import load_model
 
-    return load_model(storage_for(current_organisation_id()).get(artifact.storage_key))
+    # Deserialised once per worker and reused. The artifact came from a tenant-scoped
+    # query, and the key includes its organisation, so a hit is never another tenant's model.
+    organisation_id = current_organisation_id()
+    return current_app.extensions["model_cache"].get_or_load(
+        (organisation_id, artifact.id),
+        lambda: load_model(storage_for(organisation_id).get(artifact.storage_key)),
+    )
 
 
 def _save_model(artifacts) -> ModelArtifact:
@@ -121,7 +110,7 @@ def _save_model(artifacts) -> ModelArtifact:
         feature_importances=artifacts.feature_importances,
         model_comparison=artifacts.model_comparison,
         storage_key=model_key(organisation_id, artifact_id),
-        trained_by=g.user.id,
+        trained_by=current_user.id,
         is_active=True,
     )
     storage_for(organisation_id).put(artifact.storage_key, serialize_model(artifacts.model))
@@ -306,9 +295,10 @@ def results():
     from utils.predict import predict_dataframe
 
     # TODO: predictions are recomputed on every request to /results, /download-results
-    # and /compare, including fetching and unpickling the model from object storage.
-    # Materialise them into a table when the prediction dataset or active model changes;
-    # recomputing per request becomes a real cost once LLM reasoning is added.
+    # and /compare. The model itself is now cached per worker (see _load_model), but the
+    # predictions should be materialised into a table when the prediction dataset or
+    # active model changes; recomputing per request becomes a real cost once LLM
+    # reasoning is added.
     artifact = _active_model()
     if artifact is None:
         flash("Train the model first.", "warning")
@@ -500,24 +490,37 @@ def recheck_comparison():
     flash("Comparison metrics refreshed using the current prediction and actual results files.", "success")
     return redirect(url_for("compare"))
 
+def healthz():
+    try:
+        db.session.execute(text("SELECT 1"))
+    except Exception:
+        return {"status": "unavailable"}, 503
+    return {"status": "ok"}
+
+def forbidden(error):
+    return render_template("error.html", message="You do not have permission to do that."), 403
+
 def internal_error(error):
     return render_template("error.html", message="An internal server error occurred. Please check your uploaded dataset and try again."), 500
 
 
 def _register_routes(app: Flask) -> None:
-    # Endpoint names default to the view function names, so every url_for()
-    # in the templates resolves exactly as it did with @app.route.
-    app.add_url_rule("/", view_func=home)
-    app.add_url_rule("/upload-train", view_func=upload_train, methods=["GET", "POST"])
-    app.add_url_rule("/upload-predict", view_func=upload_predict, methods=["GET", "POST"])
-    app.add_url_rule("/train", view_func=train, methods=["GET", "POST"])
-    app.add_url_rule("/results", view_func=results)
-    app.add_url_rule("/download-results", view_func=download_results)
-    app.add_url_rule("/explain", view_func=explain)
-    app.add_url_rule("/about", view_func=about)
-    app.add_url_rule("/upload-actual", view_func=upload_actual, methods=["GET", "POST"])
-    app.add_url_rule("/compare", view_func=compare)
-    app.add_url_rule("/recheck-comparison", view_func=recheck_comparison, methods=["POST"])
+    # Endpoint names default to the view function names (require_role preserves them),
+    # so every url_for() in the templates resolves exactly as it did with @app.route.
+    viewer, staff, owner = Role.VIEWER, Role.STAFF, Role.OWNER
+    app.add_url_rule("/", view_func=require_role(viewer)(home))
+    app.add_url_rule("/upload-train", view_func=require_role(staff)(upload_train), methods=["GET", "POST"])
+    app.add_url_rule("/upload-predict", view_func=require_role(staff)(upload_predict), methods=["GET", "POST"])
+    app.add_url_rule("/train", view_func=require_role(viewer, write=owner)(train), methods=["GET", "POST"])
+    app.add_url_rule("/results", view_func=require_role(viewer)(results))
+    app.add_url_rule("/download-results", view_func=require_role(staff)(download_results))
+    app.add_url_rule("/explain", view_func=require_role(viewer)(explain))
+    app.add_url_rule("/about", view_func=require_role(viewer)(about))
+    app.add_url_rule("/upload-actual", view_func=require_role(staff)(upload_actual), methods=["GET", "POST"])
+    app.add_url_rule("/compare", view_func=require_role(viewer)(compare))
+    app.add_url_rule("/recheck-comparison", view_func=require_role(viewer)(recheck_comparison), methods=["POST"])
+    app.add_url_rule("/healthz", view_func=healthz)
+    app.register_error_handler(403, forbidden)
     app.register_error_handler(500, internal_error)
 
 
@@ -531,8 +534,10 @@ def create_app(config: dict | None = None, env: str | None = None) -> Flask:
     db.init_app(app)
     migrate.init_app(app, db)
     app.extensions["storage"] = build_backend(app.config)
-    app.before_request(_load_request_user)
+    app.extensions["model_cache"] = ModelCache(app.config["MODEL_CACHE_SIZE"])
+    init_auth(app)
     _register_routes(app)
+    check_route_roles(app)
     return app
 
 

@@ -11,11 +11,14 @@
   </div>
 </div>
 
+{% if user_has_role('owner') %}
 <div class="card" style="margin-top: 18px;">
   <form method="post">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
     <button class="btn" type="submit">Train Models</button>
   </form>
 </div>
+{% endif %}
 
 {% if metrics %}
 <h2 style="margin-top: 24px;">Best Model Summary</h2>
@@ -93,7 +96,7 @@
 <div class="card" style="margin-top:18px;">
   <h3>Next Step</h3>
   <div class="hero-actions">
-    <a class="btn" href="{{ url_for('upload_predict') }}">Upload Prediction Dataset</a>
+    {% if user_has_role('staff') %}<a class="btn" href="{{ url_for('upload_predict') }}">Upload Prediction Dataset</a>{% endif %}
     <a class="btn btn-secondary" href="{{ url_for('explain') }}">View Explanation</a>
     <a class="btn btn-secondary" href="{{ url_for('home') }}">Back to Home</a>
   </div>

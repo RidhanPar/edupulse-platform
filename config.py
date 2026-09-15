@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import os
 import secrets
+from datetime import timedelta
 from pathlib import Path
 
 MAX_UPLOAD_BYTES = 5 * 1024 * 1024
@@ -14,6 +15,15 @@ LOCAL_ENVS = {"development", "testing"}
 STORAGE_BACKENDS = ("local", "s3")
 S3_SETTINGS = ("STORAGE_ENDPOINT", "STORAGE_BUCKET", "STORAGE_ACCESS_KEY", "STORAGE_SECRET_KEY")
 DEFAULT_LOCAL_STORAGE_ROOT = Path(__file__).resolve().parent / "var" / "storage"
+
+# OWASP's recommended Argon2id parameters (19 MiB, 2 iterations, 1 lane): strong, and
+# small enough that concurrent logins do not exhaust a small instance's memory.
+ARGON2_PARAMS = {"memory_cost": 19456, "time_cost": 2, "parallelism": 1}
+# Deliberately weak so the test suite stays fast. Only used when FLASK_ENV=testing.
+ARGON2_TEST_PARAMS = {"memory_cost": 1024, "time_cost": 1, "parallelism": 1}
+
+# Idle timeout: each request pushes the expiry forward by this much.
+SESSION_LIFETIME = timedelta(hours=8)
 
 
 class ConfigError(RuntimeError):
@@ -89,4 +99,15 @@ def build_config(env: str) -> dict:
         "STORAGE_BACKEND": storage_backend,
         "STORAGE_LOCAL_ROOT": _env("STORAGE_LOCAL_ROOT") or str(DEFAULT_LOCAL_STORAGE_ROOT),
         **{name: _env(name) for name in S3_SETTINGS},
+        # Server-side sessions (auth.sessions): the cookie carries only a random id.
+        "SESSION_COOKIE_SECURE": True,
+        "SESSION_COOKIE_HTTPONLY": True,
+        "SESSION_COOKIE_SAMESITE": "Lax",
+        "PERMANENT_SESSION_LIFETIME": SESSION_LIFETIME,
+        # Delete expired session rows on average once every N requests.
+        "SESSION_CLEANUP_N_REQUESTS": 200,
+        # CSRF tokens last as long as the session, instead of failing on a form left open an hour.
+        "WTF_CSRF_TIME_LIMIT": None,
+        "ARGON2_PARAMS": ARGON2_TEST_PARAMS if env == "testing" else ARGON2_PARAMS,
+        "MODEL_CACHE_SIZE": 4,
     }

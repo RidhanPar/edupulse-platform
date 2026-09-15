@@ -13,6 +13,13 @@ def load_model(data: bytes):
 
     joblib.load unpickles, which can execute code: only pass bytes this application
     wrote to its own storage, fetched through TenantStorage.
+
+    TODO(section 7): sign serialised models and verify before unpickling, so write
+    access to the bucket alone cannot run code in the app. Use a separate
+    MODEL_SIGNING_KEY environment variable, required in production. Do not derive it
+    from FLASK_SECRET_KEY: rotating that secret would make every stored model
+    unloadable. Verification fails closed: an unsigned or badly signed model raises
+    and is never loaded.
     """
     return joblib.load(io.BytesIO(data))
 
