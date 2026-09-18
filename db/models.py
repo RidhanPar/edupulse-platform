@@ -203,8 +203,14 @@ class AuditEvent(db.Model):
     """Append-only, enforced in db/audit.py. See the retention constants above."""
 
     __tablename__ = "audit_events"
+    # One index per /audit filter, each ending in the keyset order (created_at, id), so
+    # every page is an index range scan that stops after one page of rows, however
+    # large the table grows or however rare the filtered user or action is. A date range
+    # uses the first index. See db.audit.audit_query.
     __table_args__ = (
-        Index("ix_audit_events_org_created", "organisation_id", "created_at"),
+        Index("ix_audit_events_org_created_id", "organisation_id", "created_at", "id"),
+        Index("ix_audit_events_org_user_created_id", "organisation_id", "user_id", "created_at", "id"),
+        Index("ix_audit_events_org_action_created_id", "organisation_id", "action", "created_at", "id"),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)

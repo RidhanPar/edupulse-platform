@@ -47,6 +47,16 @@ flowchart LR
 
 EduPulse now requires authentication and isolates data per organisation. It is not yet approved for production student data: encryption at rest, data retention policy, breach procedure and a signed Data Processing Agreement are not implemented. Use synthetic or fully anonymised data only.
 
+## Security Behaviour
+
+These are deliberate, not bugs:
+
+- Changing your password logs you out of every other session.
+- A session ends after 8 hours without activity, and 12 hours after login even if you stay active.
+- Every failed login shows the same message, whatever the reason.
+- Invite links work once and expire after 7 days.
+- Owners can filter and page through the audit log, but cannot export or edit it.
+
 ## Run Locally
 
 ```bash

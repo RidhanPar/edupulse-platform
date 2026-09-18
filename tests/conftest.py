@@ -1,4 +1,5 @@
 import io
+import time
 import uuid
 from pathlib import Path
 from types import SimpleNamespace
@@ -8,6 +9,7 @@ import pytest
 
 from app import create_app
 from auth.passwords import hash_password
+from auth.sessions import AUTH_TIME_KEY
 from db import db
 from db.models import ModelArtifact, Organisation, Role, User
 from utils.storage import model_key, storage_for
@@ -86,7 +88,8 @@ def login():
 def tenant(app, make_org):
     """Create an organisation and user, returning a test client already logged in as that user.
 
-    Sets Flask-Login's session key directly; tests/test_auth.py covers the real login flow.
+    Writes the session a real login would (see auth.views._begin_session); tests/test_auth.py
+    covers the login flow itself.
     """
 
     def _tenant(slug: str, role: Role = Role.OWNER) -> SimpleNamespace:
@@ -94,6 +97,7 @@ def tenant(app, make_org):
         client = app.test_client()
         with client.session_transaction() as session:
             session["_user_id"] = str(user.id)
+            session[AUTH_TIME_KEY] = time.time()
         return SimpleNamespace(client=client, organisation=organisation, user=user)
 
     return _tenant

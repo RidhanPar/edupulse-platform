@@ -1,8 +1,9 @@
 """The single place that scopes tenant-owned queries to an organisation.
 
-Dataset, ModelArtifact and AuditEvent rows must be selected through these
-helpers only. tests/test_tenancy.py fails the build if an organisation filter
-is written by hand anywhere else.
+Dataset, ModelArtifact, AuditEvent and User rows must be selected by organisation
+through these helpers only. tests/test_tenancy.py fails the build if an organisation
+filter is written by hand anywhere else. (Login looks a user up by email across all
+organisations, which is not an organisation filter.)
 
 Soft-deleted rows are excluded unless include_deleted=True is passed, so the
 safe behaviour is what you get by forgetting.
@@ -15,9 +16,9 @@ from flask import abort
 from sqlalchemy import Select, select
 
 from db import db
-from db.models import AuditEvent, Dataset, ModelArtifact
+from db.models import AuditEvent, Dataset, ModelArtifact, User
 
-TENANT_MODELS = (Dataset, ModelArtifact, AuditEvent)
+TENANT_MODELS = (Dataset, ModelArtifact, AuditEvent, User)
 
 
 class TenancyError(RuntimeError):

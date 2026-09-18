@@ -21,6 +21,7 @@
         <a href="{{ url_for('compare') }}">Compare Results</a>
         <a href="{{ url_for('explain') }}">Explain</a>
         <a href="{{ url_for('about') }}">About</a>
+        {% if user_has_role('owner') %}<a href="{{ url_for('audit_log') }}">Audit Log</a>{% endif %}
       </div>
       {% endif %}
     </div>

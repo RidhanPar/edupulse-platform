@@ -6,14 +6,15 @@ refuses to start. Forgetting either fails closed.
 """
 from __future__ import annotations
 
+import time
 import uuid
 
-from flask import Flask, abort, g, redirect, render_template, request, url_for
-from flask_login import LoginManager, current_user
+from flask import Flask, abort, current_app, flash, g, redirect, render_template, request, session, url_for
+from flask_login import LoginManager, current_user, logout_user
 from flask_wtf.csrf import CSRFError, CSRFProtect
 
 from auth.roles import user_has_role
-from auth.sessions import DatabaseSessionInterface
+from auth.sessions import AUTH_TIME_KEY, DatabaseSessionInterface
 from db import db
 from db.models import User
 
@@ -43,11 +44,31 @@ def _unauthorized():
     return redirect(url_for("auth.login", next=target))
 
 
+def end_session() -> None:
+    """Log out and discard the session, continuing under a fresh session id."""
+    logout_user()
+    current_app.session_interface.regenerate(session)
+    session.clear()
+
+
+def _login_expired() -> bool:
+    started = session.get(AUTH_TIME_KEY)
+    # A session without a login time did not come from a login, so it is not trusted.
+    if not isinstance(started, (int, float)):
+        return True
+    return time.time() - started > current_app.config["SESSION_ABSOLUTE_LIFETIME"].total_seconds()
+
+
 def _require_login():
+    if request.endpoint == "static":
+        return None
     # Flask-Login caches the loaded user on g, which lives on the app context. Drop any
     # cached user so identity always comes from this request's session, even if an app
     # context outlives a single request (as it does in the test suite).
     g.pop("_login_user", None)
+    if current_user.is_authenticated and _login_expired():
+        end_session()
+        flash("Your session has expired. Log in again.", "warning")
     if request.endpoint is None or request.endpoint in PUBLIC_ENDPOINTS:
         return None
     if not current_user.is_authenticated:

@@ -1,16 +1,19 @@
 import re
+import time
+from datetime import datetime, timedelta, timezone
 from urllib.parse import parse_qs, urlsplit
 
 import pytest
-from sqlalchemy import select
+from sqlalchemy import select, update
 
 from auth import PUBLIC_ENDPOINTS, passwords
 from auth.roles import require_role
 from auth.views import LOGIN_FAILED, safe_next_url
 from db import db
-from db.models import AuditEvent, Role, UserSession
+from db.models import AuditEvent, Role, UserSession, utcnow
 
 NEW_PASSWORD = "a brand new passphrase"
+TWELVE_HOURS = 12 * 3600
 
 
 def _events(action: str) -> list[AuditEvent]:
@@ -19,6 +22,16 @@ def _events(action: str) -> list[AuditEvent]:
 
 def _without_csrf_token(page: str) -> str:
     return re.sub(r'name="csrf_token" value="[^"]*"', 'name="csrf_token"', page)
+
+
+def _set_session(client, **values) -> None:
+    with client.session_transaction() as session:
+        session.update(values)
+
+
+def _session_value(client, key: str):
+    with client.session_transaction() as session:
+        return session.get(key)
 
 
 def test_only_login_invite_healthz_and_static_are_public():
@@ -50,7 +63,7 @@ def test_every_protected_route_redirects_anonymous_users_to_login(app, client):
         assert location.path == "/login", rule.rule
         assert parse_qs(location.query)["next"] == [rule.rule], rule.rule
         checked.append(rule.rule)
-    assert len(checked) == 13
+    assert len(checked) == 14
 
 
 def test_api_requests_get_401_instead_of_a_login_redirect(app, client):
@@ -215,6 +228,73 @@ def test_logout_is_post_only_audited_and_ends_the_session(app, account, login):
     assert replay.get("/").status_code == 302
 
 
+def test_a_session_ends_12_hours_after_login_even_while_active(app, account, login):
+    _, user = account("alpha")
+    client = app.test_client()
+    login(client, user.email)
+    _set_session(client, _auth_time=time.time() - TWELVE_HOURS + 120)
+    assert client.get("/").status_code == 200
+
+    _set_session(client, _auth_time=time.time() - TWELVE_HOURS - 1)
+    response = client.get("/")
+
+    assert response.status_code == 302 and response.headers["Location"].startswith("/login")
+    assert client.get("/").status_code == 302
+
+
+def test_activity_never_moves_the_login_time(app, account, login):
+    _, user = account("alpha")
+    client = app.test_client()
+    login(client, user.email)
+    started = _session_value(client, "_auth_time")
+
+    for path in ("/", "/about", "/change-password"):
+        client.get(path)
+
+    assert isinstance(started, float)
+    assert _session_value(client, "_auth_time") == started
+
+
+def test_a_session_without_a_login_time_is_not_trusted(app, account):
+    _, user = account("alpha")
+    client = app.test_client()
+    _set_session(client, _user_id=str(user.id))
+
+    response = client.get("/")
+
+    assert response.status_code == 302 and response.headers["Location"].startswith("/login")
+    assert "Your session has expired." in client.get("/login").get_data(as_text=True)
+
+
+def test_stored_expiry_never_passes_the_absolute_deadline(app, account, login):
+    _, user = account("alpha")
+    client = app.test_client()
+    login(client, user.email)
+    started = time.time() - (TWELVE_HOURS - 600)  # ten minutes of absolute lifetime left
+    _set_session(client, _auth_time=started)
+
+    assert client.get("/").status_code == 200
+
+    sid = client.get_cookie("session").value
+    expiry = db.session.execute(select(UserSession.expiry).where(UserSession.session_id == f"session:{sid}")).scalar_one()
+    expiry = expiry if expiry.tzinfo else expiry.replace(tzinfo=timezone.utc)
+    deadline = datetime.fromtimestamp(started, timezone.utc) + timedelta(hours=12)
+    assert abs((expiry - deadline).total_seconds()) < 1  # not now + the 8 hour idle window
+
+
+def test_an_idle_session_expires(app, account, login):
+    _, user = account("alpha")
+    client = app.test_client()
+    login(client, user.email)
+    sid = client.get_cookie("session").value
+    db.session.execute(
+        update(UserSession).where(UserSession.session_id == f"session:{sid}").values(expiry=utcnow() - timedelta(seconds=1))
+    )
+    db.session.commit()
+
+    assert client.get("/").status_code == 302
+
+
 def test_change_password_requires_the_current_password(account, client, login):
     _, user = account("alpha")
     login(client, user.email)
@@ -256,6 +336,7 @@ def test_changing_password_ends_other_sessions_and_rotates_this_one(app, account
     login(this_device, user.email)
     login(other_device, user.email)
     sid_before = this_device.get_cookie("session").value
+    started = _session_value(this_device, "_auth_time")
 
     response = this_device.post(
         "/change-password", data={"current_password": password, "password": NEW_PASSWORD, "confirm": NEW_PASSWORD}
@@ -264,6 +345,7 @@ def test_changing_password_ends_other_sessions_and_rotates_this_one(app, account
     assert response.status_code == 302
     assert this_device.get_cookie("session").value != sid_before
     assert this_device.get("/").status_code == 200
+    assert _session_value(this_device, "_auth_time") == started  # no extension of the absolute lifetime
     assert other_device.get("/").status_code == 302
     assert len(_events("password_changed")) == 1
     assert login(app.test_client(), user.email, password).status_code == 200  # old password now fails
@@ -273,7 +355,7 @@ def test_changing_password_ends_other_sessions_and_rotates_this_one(app, account
 def test_passwords_are_argon2id_and_upgraded_when_parameters_change(account, client, login, password):
     _, user = account("alpha")
     assert user.password_hash.startswith("$argon2id$")
-    user.password_hash = passwords._context(2048, 1, 1).hash(password)
+    user.password_hash = passwords._hasher(2048, 1, 1).hash(password)
     db.session.commit()
     assert passwords.needs_rehash(user.password_hash)
 

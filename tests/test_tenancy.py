@@ -6,7 +6,7 @@ import pytest
 from werkzeug.exceptions import NotFound
 
 from db import db
-from db.models import AuditEvent, Dataset, DatasetKind, ModelArtifact, Organisation, utcnow
+from db.models import AuditEvent, Dataset, DatasetKind, ModelArtifact, Organisation, User, utcnow
 from db.tenancy import TenancyError, scoped_get, scoped_get_or_404, scoped_select
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -64,6 +64,14 @@ def test_scoped_get_hides_other_organisations_rows(tenants, model):
     assert scoped_get(model, org_a.id, rows_b[model].id) is None
     with pytest.raises(NotFound):
         scoped_get_or_404(model, org_a.id, rows_b[model].id)
+
+
+def test_users_are_scoped_to_their_organisation(make_org):
+    org_a, user_a = make_org("alpha")
+    _, user_b = make_org("beta")
+
+    assert db.session.scalars(scoped_select(User, org_a.id)).all() == [user_a]
+    assert scoped_get(User, org_a.id, user_b.id) is None
 
 
 def test_scoped_get_accepts_string_ids_and_ignores_malformed_ones(tenants):

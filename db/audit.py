@@ -1,4 +1,5 @@
-"""Append-only enforcement for audit_events, and its one sanctioned exception.
+"""The audit log: append-only enforcement and its one sanctioned exception, writing
+events, and reading them back one bounded page at a time.
 
 Every statement SQLAlchemy sends to the database passes _enforce_append_only, so
 ORM flushes, bulk ORM statements, Core statements and text() SQL are all covered.
@@ -13,14 +14,34 @@ equivalent, so it lands with the rest of the Postgres-specific migration work.
 from __future__ import annotations
 
 import re
-from datetime import datetime, timedelta
+import uuid
+from dataclasses import dataclass
+from datetime import datetime, timedelta, timezone
 
 from flask import has_request_context, request
-from sqlalchemy import event, null, update
+from sqlalchemy import Select, Uuid, event, literal, null, tuple_, update
 from sqlalchemy.engine import Engine
 
 from db import db
 from db.models import AUDIT_PERSONAL_DATA_RETENTION_DAYS, AuditEvent, utcnow
+from db.tenancy import scoped_select
+
+# Every action the application records. The audit page offers exactly these as filters;
+# tests/test_audit_events.py fails if code records an action missing from this list.
+AUDIT_ACTIONS = (
+    "login_success",
+    "login_failure",
+    "logout",
+    "password_changed",
+    "invite_accepted",
+    "dataset_uploaded",
+    "model_trained",
+    "prediction_run",
+    "results_exported",
+)
+
+# Fixed server-side page size. The table only grows, so no caller may ask for more.
+AUDIT_PAGE_SIZE = 50
 
 
 class AppendOnlyViolation(RuntimeError):
@@ -102,3 +123,90 @@ def record_audit_event(
     )
     db.session.add(event)
     return event
+
+
+@dataclass(frozen=True)
+class AuditFilters:
+    user_id: uuid.UUID | None = None
+    action: str | None = None
+    start: datetime | None = None  # inclusive
+    end: datetime | None = None  # exclusive
+
+
+@dataclass(frozen=True)
+class AuditPage:
+    events: list[AuditEvent]
+    newer_cursor: str | None
+    older_cursor: str | None
+
+
+_EPOCH = datetime(1970, 1, 1, tzinfo=timezone.utc)
+
+
+def encode_cursor(event: AuditEvent) -> str:
+    """An opaque page position: the event's created_at (as UTC microseconds) and id."""
+    created_at = event.created_at if event.created_at.tzinfo else event.created_at.replace(tzinfo=timezone.utc)
+    return f"{(created_at - _EPOCH) // timedelta(microseconds=1)}.{event.id.hex}"
+
+
+def decode_cursor(cursor: str | None) -> tuple[datetime, uuid.UUID] | None:
+    """The position in a cursor, or None for anything malformed (which means the first page)."""
+    try:
+        micros, event_id = cursor.split(".")
+        return _EPOCH + timedelta(microseconds=int(micros)), uuid.UUID(hex=event_id)
+    except (AttributeError, ValueError, OverflowError):
+        return None
+
+
+def audit_query(organisation_id, filters: AuditFilters, *, before=None, after=None, limit: int) -> Select:
+    """Keyset-paginated SELECT over one organisation's events.
+
+    Rows are ordered by (created_at, id); id breaks ties between events recorded in the
+    same microsecond. Newest first, or oldest first when paging towards newer rows.
+    """
+    statement = scoped_select(AuditEvent, organisation_id)
+    if filters.user_id is not None:
+        statement = statement.where(AuditEvent.user_id == filters.user_id)
+    if filters.action is not None:
+        statement = statement.where(AuditEvent.action == filters.action)
+    if filters.start is not None:
+        statement = statement.where(AuditEvent.created_at >= filters.start)
+    if filters.end is not None:
+        statement = statement.where(AuditEvent.created_at < filters.end)
+
+    position = tuple_(AuditEvent.created_at, AuditEvent.id)
+
+    def bound(cursor):
+        return tuple_(literal(cursor[0], AuditEvent.created_at.type), literal(cursor[1], Uuid()))
+
+    if after is not None:
+        return (
+            statement.where(position > bound(after))
+            .order_by(AuditEvent.created_at.asc(), AuditEvent.id.asc())
+            .limit(limit)
+        )
+    if before is not None:
+        statement = statement.where(position < bound(before))
+    return statement.order_by(AuditEvent.created_at.desc(), AuditEvent.id.desc()).limit(limit)
+
+
+def audit_page(organisation_id, filters: AuditFilters, *, before=None, after=None, page_size: int = AUDIT_PAGE_SIZE) -> AuditPage:
+    """One bounded page of an organisation's audit log, newest first.
+
+    Never uses OFFSET or COUNT(*): both get slower as the table grows, while a keyset
+    position costs the same on the first page and the millionth row.
+    """
+    page_size = max(1, min(page_size, AUDIT_PAGE_SIZE))
+    rows = list(
+        db.session.scalars(audit_query(organisation_id, filters, before=before, after=after, limit=page_size + 1))
+    )
+    has_more = len(rows) > page_size
+    rows = rows[:page_size]
+    if after is not None:
+        rows.reverse()
+        newer = encode_cursor(rows[0]) if has_more and rows else None
+        older = encode_cursor(rows[-1]) if rows else None
+    else:
+        newer = encode_cursor(rows[0]) if before is not None and rows else None
+        older = encode_cursor(rows[-1]) if has_more else None
+    return AuditPage(events=rows, newer_cursor=newer, older_cursor=older)

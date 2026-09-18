@@ -1,17 +1,19 @@
 """Login, logout, password change and invite acceptance."""
 from __future__ import annotations
 
+import time
 from urllib.parse import urlsplit
 
 from flask import Blueprint, current_app, flash, redirect, render_template, request, session, url_for
-from flask_login import current_user, login_user, logout_user
+from flask_login import current_user, login_user
 from sqlalchemy import select
 from sqlalchemy.orm import joinedload
 
-from auth import passwords
+from auth import end_session, passwords
 from auth.forms import ChangePasswordForm, LoginForm, SetPasswordForm
 from auth.invites import consume_invite, pending_invite
 from auth.roles import require_role
+from auth.sessions import AUTH_TIME_KEY
 from db import db
 from db.audit import record_audit_event
 from db.models import Role, User, utcnow
@@ -72,6 +74,8 @@ def _begin_session(user: User, password: str) -> None:
     current_app.session_interface.regenerate(session)
     session.clear()
     login_user(user)
+    # Starts the absolute session lifetime; nothing after login moves it.
+    session[AUTH_TIME_KEY] = time.time()
     user.last_login_at = utcnow()
     if passwords.needs_rehash(user.password_hash):
         user.password_hash = passwords.hash_password(password)
@@ -98,9 +102,7 @@ def login():
 def logout():
     record_audit_event("logout", user=current_user)
     db.session.commit()
-    logout_user()
-    current_app.session_interface.regenerate(session)
-    session.clear()
+    end_session()
     flash("You have been logged out.", "success")
     return redirect(url_for("auth.login"))
 
@@ -116,7 +118,8 @@ def change_password():
             current_user.password_hash = passwords.hash_password(form.password.data)
             record_audit_event("password_changed", user=current_user)
             db.session.commit()
-            # End every other session for this user, and rotate this one's id.
+            # End every other session for this user, and rotate this one's id. The login
+            # time is kept, so changing a password does not extend the absolute lifetime.
             interface = current_app.session_interface
             interface.regenerate(session)
             interface.revoke_user_sessions(current_user.id)

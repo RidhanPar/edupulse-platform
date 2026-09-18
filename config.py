@@ -24,6 +24,8 @@ ARGON2_TEST_PARAMS = {"memory_cost": 1024, "time_cost": 1, "parallelism": 1}
 
 # Idle timeout: each request pushes the expiry forward by this much.
 SESSION_LIFETIME = timedelta(hours=8)
+# Absolute limit, counted from login: activity cannot keep a session alive past it.
+SESSION_ABSOLUTE_LIFETIME = timedelta(hours=12)
 
 
 class ConfigError(RuntimeError):
@@ -104,6 +106,7 @@ def build_config(env: str) -> dict:
         "SESSION_COOKIE_HTTPONLY": True,
         "SESSION_COOKIE_SAMESITE": "Lax",
         "PERMANENT_SESSION_LIFETIME": SESSION_LIFETIME,
+        "SESSION_ABSOLUTE_LIFETIME": SESSION_ABSOLUTE_LIFETIME,
         # Delete expired session rows on average once every N requests.
         "SESSION_CLEANUP_N_REQUESTS": 200,
         # CSRF tokens last as long as the session, instead of failing on a form left open an hour.

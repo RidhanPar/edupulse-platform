@@ -7,11 +7,15 @@ outside Alembic, redefines its model on every create_app(), and commits the app'
 own db.session whenever it saves a session, so a view's uncommitted changes would be
 committed as a side effect. Here every session read and write runs on its own short
 connection and transaction.
+
+Two limits apply: an idle timeout (PERMANENT_SESSION_LIFETIME, pushed forward by each
+request) and an absolute one (SESSION_ABSOLUTE_LIFETIME, counted from login and never
+extended by activity).
 """
 from __future__ import annotations
 
 import uuid
-from datetime import timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 from flask import Flask
@@ -20,6 +24,9 @@ from sqlalchemy import delete, insert, select, update
 
 from db import db
 from db.models import UserSession, utcnow
+
+# Unix time of the login that created the session's authentication.
+AUTH_TIME_KEY = "_auth_time"
 
 _TABLE = UserSession.__table__
 
@@ -54,9 +61,15 @@ class DatabaseSessionInterface(ServerSideSessionInterface):
             connection.execute(delete(_TABLE).where(_TABLE.c.session_id == store_id))
 
     def _upsert_session(self, session_lifetime: timedelta, session: ServerSideSession, store_id: str) -> None:
+        expiry = utcnow() + session_lifetime
+        started = dict(session).get(AUTH_TIME_KEY)
+        if isinstance(started, (int, float)):
+            # Never keep a session past its absolute deadline, however recently it was used.
+            deadline = datetime.fromtimestamp(started, timezone.utc) + self.app.config["SESSION_ABSOLUTE_LIFETIME"]
+            expiry = min(expiry, deadline)
         values = {
             "data": self.serializer.encode(session),
-            "expiry": utcnow() + session_lifetime,
+            "expiry": expiry,
             "user_id": _session_user_id(session),
         }
         with db.engine.begin() as connection:

@@ -167,6 +167,8 @@ EXPECTED_ROUTES = {
     ("/change-password", "auth.change_password", frozenset({"GET", "POST"})),
     ("/invite/<token>", "auth.invite", frozenset({"GET", "POST"})),
     ("/healthz", "healthz", frozenset({"GET"})),
+    # Added with the audit log:
+    ("/audit", "audit_log", frozenset({"GET"})),
 }
 
 

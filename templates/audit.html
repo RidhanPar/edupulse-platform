@@ -1,0 +1,83 @@
+{% extends 'base.html' %}
+{% block title %}EduPulse | Audit Log{% endblock %}
+{% block content %}
+<div class="page-header">
+  <div>
+    <h1>Audit Log</h1>
+    <p class="small">
+      Sign-ins, uploads, training runs, prediction views and exports for {{ current_user.organisation.name }},
+      newest first. Times are UTC. Up to {{ page_size }} events per page.
+    </p>
+  </div>
+</div>
+
+<div class="card">
+  <form method="get" class="audit-filters">
+    <label>User
+      <select name="user">
+        <option value="">All users</option>
+        {% for user in users %}
+        <option value="{{ user.id }}" {% if form.user == user.id|string %}selected{% endif %}>{{ user.email }}</option>
+        {% endfor %}
+      </select>
+    </label>
+    <label>Action
+      <select name="action">
+        <option value="">All actions</option>
+        {% for action in actions %}
+        <option value="{{ action }}" {% if form.action == action %}selected{% endif %}>{{ action }}</option>
+        {% endfor %}
+      </select>
+    </label>
+    <label>From
+      <input type="date" name="from" value="{{ form['from'] }}">
+    </label>
+    <label>To
+      <input type="date" name="to" value="{{ form['to'] }}">
+    </label>
+    <div class="audit-filter-actions">
+      <button class="btn" type="submit">Apply Filters</button>
+      <a class="btn btn-secondary" href="{{ url_for('audit_log') }}">Reset</a>
+    </div>
+  </form>
+</div>
+
+<div class="table-card">
+  <div class="table-wrap">
+    <table>
+      <thead>
+        <tr>
+          <th>Time (UTC)</th>
+          <th>User</th>
+          <th>Action</th>
+          <th>Entity</th>
+          <th>Details</th>
+          <th>IP address</th>
+          <th>User agent</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for row in rows %}
+        <tr class="audit-row">
+          <td>{{ row.time }}</td>
+          <td>{{ row.user }}</td>
+          <td>{{ row.action }}</td>
+          <td>{{ row.entity }}</td>
+          <td class="audit-details">{% for key, value in row.details %}<div><strong>{{ key }}:</strong> {{ value }}</div>{% endfor %}</td>
+          <td>{{ row.ip_address }}</td>
+          <td class="audit-user-agent">{{ row.user_agent }}</td>
+        </tr>
+        {% else %}
+        <tr><td colspan="7">No audit events match these filters.</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% if newer_cursor or older_cursor %}
+  <div class="hero-actions">
+    {% if newer_cursor %}<a class="btn btn-secondary" href="{{ url_for('audit_log', after=newer_cursor, **query) }}">Newer</a>{% endif %}
+    {% if older_cursor %}<a class="btn btn-secondary" href="{{ url_for('audit_log', before=older_cursor, **query) }}">Older</a>{% endif %}
+  </div>
+  {% endif %}
+</div>
+{% endblock %}

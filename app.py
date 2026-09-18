@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import io
+import json
 import os
 import uuid
+from datetime import datetime, timedelta, timezone
 
 import pandas as pd
 from flask import Flask, render_template, request, redirect, url_for, flash, Response, current_app
@@ -13,8 +15,9 @@ from auth import check_route_roles, init_auth
 from auth.roles import require_role
 from config import build_config, resolve_env
 from db import db, migrate
-from db.models import Dataset, DatasetKind, ModelArtifact, Role
-from db.tenancy import scoped_select
+from db.audit import AUDIT_ACTIONS, AUDIT_PAGE_SIZE, AuditFilters, audit_page, decode_cursor, record_audit_event
+from db.models import Dataset, DatasetKind, ModelArtifact, Role, User
+from db.tenancy import scoped_get, scoped_select
 from utils.evaluation import load_importances, load_metrics, load_model_comparison
 from utils.model_cache import ModelCache
 from utils.storage import build_backend, dataset_key, model_key, storage_for
@@ -75,6 +78,13 @@ def _store_upload(file, kind: DatasetKind) -> Dataset:
     )
     storage_for(organisation_id).put(dataset.storage_key, data)
     db.session.add(dataset)
+    record_audit_event(
+        "dataset_uploaded",
+        user=current_user,
+        entity_type="dataset",
+        entity_id=dataset.id,
+        details={"kind": kind.value, "row_count": dataset.row_count},
+    )
     db.session.commit()
     return dataset
 
@@ -97,7 +107,7 @@ def _load_model(artifact: ModelArtifact):
     )
 
 
-def _save_model(artifacts) -> ModelArtifact:
+def _save_model(artifacts, training_dataset: Dataset) -> ModelArtifact:
     from utils.train_model import serialize_model
 
     organisation_id = current_organisation_id()
@@ -120,8 +130,41 @@ def _save_model(artifacts) -> ModelArtifact:
         previous.is_active = False
         db.session.flush()
     db.session.add(artifact)
+    record_audit_event(
+        "model_trained",
+        user=current_user,
+        entity_type="model_artifact",
+        entity_id=artifact.id,
+        details={"algorithm": artifact.algorithm_name, "training_dataset_id": str(training_dataset.id)},
+    )
     db.session.commit()
     return artifact
+
+
+def _active_filters(name_query: str, risk_filter: str, prediction_filter: str) -> dict:
+    filters = {"name": name_query, "risk": risk_filter, "prediction": prediction_filter}
+    return {key: value for key, value in filters.items() if value}
+
+
+def _record_prediction_use(action: str, artifact: ModelArtifact, *, row_count: int, **details) -> None:
+    """Audit a use of the model's predictions over the organisation's student records.
+
+    Viewing /results or /compare and exporting a CSV all process identifiable student
+    data, so each one is recorded with who, which model, which dataset and how many rows.
+    """
+    prediction_dataset = _latest_dataset(DatasetKind.PREDICTION)
+    record_audit_event(
+        action,
+        user=current_user,
+        entity_type="model_artifact",
+        entity_id=artifact.id,
+        details={
+            **details,
+            "prediction_dataset_id": str(prediction_dataset.id) if prediction_dataset else None,
+            "row_count": int(row_count),
+        },
+    )
+    db.session.commit()
 
 
 def get_training_df(require_target: bool = True):
@@ -273,7 +316,7 @@ def train():
 
         try:
             artifacts = train_and_select_best(df)
-            _save_model(artifacts)
+            _save_model(artifacts, _latest_dataset(DatasetKind.TRAINING))
             metrics = {"best_model": artifacts.model_name, **artifacts.metrics}
             importances = artifacts.feature_importances
             comparison = artifacts.model_comparison
@@ -343,6 +386,13 @@ def results():
     }
 
     records = filtered.head(200).to_dict(orient="records")
+    _record_prediction_use(
+        "prediction_run",
+        artifact,
+        row_count=summary["total"],
+        page="results",
+        filters=_active_filters(name_query, risk_filter, prediction_filter),
+    )
 
     return render_template(
         "results.html",
@@ -402,6 +452,14 @@ def download_results():
 
     available_cols = [col for col in export_cols if col in filtered.columns]
     csv_data = filtered[available_cols].to_csv(index=False)
+    # An export is an uncontrolled copy of identifiable student data: record who took it,
+    # how many rows and which filters produced it.
+    _record_prediction_use(
+        "results_exported",
+        artifact,
+        row_count=len(filtered),
+        filters=_active_filters(name_query, risk_filter, prediction_filter),
+    )
 
     return Response(
         csv_data,
@@ -477,6 +535,9 @@ def compare():
         predicted_results = predict_dataframe(pred_df, _load_model(artifact))
         comparison_df, comparison_metrics = compare_predictions_with_actual(predicted_results, actual_df)
         records = comparison_df.head(200).to_dict(orient="records")
+        _record_prediction_use(
+            "prediction_run", artifact, row_count=comparison_metrics["total_compared"], page="compare"
+        )
         return render_template(
             "compare.html",
             records=records,
@@ -489,6 +550,75 @@ def compare():
 def recheck_comparison():
     flash("Comparison metrics refreshed using the current prediction and actual results files.", "success")
     return redirect(url_for("compare"))
+
+def _parse_day(value: str) -> datetime | None:
+    return datetime.strptime(value, "%Y-%m-%d").replace(tzinfo=timezone.utc)
+
+
+def _as_utc(value: datetime) -> datetime:
+    return value if value.tzinfo else value.replace(tzinfo=timezone.utc)
+
+
+def _audit_row(event, emails: dict) -> dict:
+    details = [
+        (key, json.dumps(value, sort_keys=True) if isinstance(value, (dict, list)) else value)
+        for key, value in sorted((event.details or {}).items())
+    ]
+    entity = " ".join(part for part in (event.entity_type, event.entity_id) if part)
+    return {
+        "time": _as_utc(event.created_at).strftime("%Y-%m-%d %H:%M:%S"),
+        "user": emails.get(event.user_id, "—") if event.user_id else "—",
+        "action": event.action,
+        "entity": entity,
+        "details": details,
+        "ip_address": event.ip_address or "",
+        "user_agent": event.user_agent or "",
+    }
+
+
+def audit_log():
+    """Owner-only, read-only view of the organisation's audit log, one bounded page at a time.
+
+    Filter values that do not parse, or that name another organisation's user, are ignored
+    rather than trusted. There is deliberately no export: that would be a bulk extraction
+    of personal data in its own right.
+    """
+    organisation_id = current_organisation_id()
+    users = db.session.scalars(scoped_select(User, organisation_id).order_by(User.email)).all()
+    emails = {user.id: user.email for user in users}
+
+    form = {key: request.args.get(key, "").strip() for key in ("user", "action", "from", "to")}
+    filter_user = scoped_get(User, organisation_id, form["user"]) if form["user"] else None
+    action = form["action"] if form["action"] in AUDIT_ACTIONS else None
+    start = end = None
+    try:
+        start = _parse_day(form["from"]) if form["from"] else None
+        end = _parse_day(form["to"]) + timedelta(days=1) if form["to"] else None  # "to" is inclusive
+    except ValueError:
+        start = end = None
+        form["from"] = form["to"] = ""
+        flash("Dates must be in YYYY-MM-DD format.", "warning")
+    if filter_user is None:
+        form["user"] = ""
+    if action is None:
+        form["action"] = ""
+
+    filters = AuditFilters(user_id=filter_user.id if filter_user else None, action=action, start=start, end=end)
+    after = decode_cursor(request.args.get("after"))
+    before = None if after else decode_cursor(request.args.get("before"))
+    page = audit_page(organisation_id, filters, before=before, after=after)
+
+    return render_template(
+        "audit.html",
+        rows=[_audit_row(event, emails) for event in page.events],
+        users=users,
+        actions=AUDIT_ACTIONS,
+        form=form,
+        query={key: value for key, value in form.items() if value},
+        newer_cursor=page.newer_cursor,
+        older_cursor=page.older_cursor,
+        page_size=AUDIT_PAGE_SIZE,
+    )
 
 def healthz():
     try:
@@ -516,6 +646,7 @@ def _register_routes(app: Flask) -> None:
     app.add_url_rule("/download-results", view_func=require_role(staff)(download_results))
     app.add_url_rule("/explain", view_func=require_role(viewer)(explain))
     app.add_url_rule("/about", view_func=require_role(viewer)(about))
+    app.add_url_rule("/audit", view_func=require_role(owner)(audit_log))
     app.add_url_rule("/upload-actual", view_func=require_role(staff)(upload_actual), methods=["GET", "POST"])
     app.add_url_rule("/compare", view_func=require_role(viewer)(compare))
     app.add_url_rule("/recheck-comparison", view_func=require_role(viewer)(recheck_comparison), methods=["POST"])

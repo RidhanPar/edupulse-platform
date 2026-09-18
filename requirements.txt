@@ -14,5 +14,4 @@ boto3==1.35.36
 Flask-Login==0.6.3
 Flask-WTF==1.2.1
 Flask-Session==0.8.0
-passlib==1.7.4
 argon2-cffi==23.1.0

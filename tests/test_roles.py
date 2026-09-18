@@ -24,6 +24,7 @@ ROLE_MAP = [
     ("POST", "/upload-actual", Role.STAFF),
     ("GET", "/download-results", Role.STAFF),
     ("POST", "/train", Role.OWNER),
+    ("GET", "/audit", Role.OWNER),
 ]
 
 
@@ -66,13 +67,15 @@ def test_an_endpoint_without_a_role_stops_the_app_from_starting(app):
 
 
 @pytest.mark.parametrize(
-    ("role", "can_upload_and_export", "can_train"),
+    ("role", "can_upload_and_export", "is_owner"),
     [(Role.VIEWER, False, False), (Role.STAFF, True, False), (Role.OWNER, True, True)],
     ids=lambda value: value.value if isinstance(value, Role) else None,
 )
-def test_pages_only_offer_actions_the_role_can_perform(ready_tenant, role, can_upload_and_export, can_train):
+def test_pages_only_offer_actions_the_role_can_perform(ready_tenant, role, can_upload_and_export, is_owner):
     client = ready_tenant("alpha", role).client
+    home = client.get("/").get_data(as_text=True)
 
     assert ("Download Results CSV" in client.get("/results").get_data(as_text=True)) is can_upload_and_export
-    assert ("Upload Train Data" in client.get("/").get_data(as_text=True)) is can_upload_and_export
-    assert ("Train Models" in client.get("/train").get_data(as_text=True)) is can_train
+    assert ("Upload Train Data" in home) is can_upload_and_export
+    assert ("Train Models" in client.get("/train").get_data(as_text=True)) is is_owner
+    assert ("Audit Log" in home) is is_owner
