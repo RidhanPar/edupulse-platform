@@ -8,3 +8,6 @@ __pycache__/
 htmlcov/
 instance/
 var/
+# Uploaded data and trained models live in the database and object storage, never in the repo.
+data/raw/
+models/best_model.pkl

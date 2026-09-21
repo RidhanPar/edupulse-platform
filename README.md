@@ -54,6 +54,8 @@ These are deliberate, not bugs:
 - Changing your password logs you out of every other session.
 - A session ends after 8 hours without activity, and 12 hours after login even if you stay active.
 - Every failed login shows the same message, whatever the reason.
+- After 5 failed logins in a minute (or 30 in an hour) from one address, that address must wait before trying again. Successful logins do not count, so a school sharing one network address is not locked out by normal use.
+- Uploads that cannot be read as CSV, or that exceed 5 MB, are rejected and nothing is stored.
 - Invite links work once and expire after 7 days.
 - Owners can filter and page through the audit log, but cannot export or edit it.
 
@@ -71,6 +73,8 @@ python app.py
 `create-org` prints a one-time invite link. Open it to set the owner's password, then log in. Add more users with `flask --app wsgi create-user demo-college tutor@example.com --role staff`.
 
 `FLASK_ENV=development` uses a local SQLite database, a generated secret key and file storage under `var/storage/`. Any other value, including leaving it unset, is treated as production: the app refuses to start unless `FLASK_SECRET_KEY`, `DATABASE_URL`, `STORAGE_BACKEND=s3`, `STORAGE_ENDPOINT`, `STORAGE_BUCKET`, `STORAGE_ACCESS_KEY` and `STORAGE_SECRET_KEY` are set.
+
+The app trusts one proxy's `X-Forwarded-For` header, as on Render. When running with nothing in front of it, set `PROXY_HOPS=0` so clients cannot spoof their address.
 
 ## Verify
 

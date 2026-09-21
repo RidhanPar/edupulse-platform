@@ -10,8 +10,10 @@ import pandas as pd
 from flask import Flask, render_template, request, redirect, url_for, flash, Response, current_app
 from flask_login import current_user
 from sqlalchemy import text
+from werkzeug.exceptions import RequestEntityTooLarge
 
 from auth import check_route_roles, init_auth
+from auth.ratelimit import trust_proxy
 from auth.roles import require_role
 from config import build_config, resolve_env
 from db import db, migrate
@@ -60,9 +62,30 @@ def _read_dataset(dataset: Dataset) -> pd.DataFrame:
     return read_csv_flexible(storage_for(current_organisation_id()).get(dataset.storage_key))
 
 
+class UploadRejected(ValueError):
+    """An upload that cannot be read as CSV. Nothing has been stored when this is raised."""
+
+
+UNREADABLE_CSV = (
+    "the file could not be read as CSV. Save it as UTF-8 CSV (comma or semicolon separated) and try again."
+)
+
+
+def _parse_upload(data: bytes) -> pd.DataFrame:
+    try:
+        df = read_csv_flexible(data)
+    except (pd.errors.ParserError, pd.errors.EmptyDataError, UnicodeDecodeError, ValueError):
+        raise UploadRejected(UNREADABLE_CSV) from None
+    if df.empty or len(df.columns) == 0:
+        raise UploadRejected("the file has no data rows.")
+    return df
+
+
 def _store_upload(file, kind: DatasetKind) -> Dataset:
     data = file.read()
-    df = read_csv_flexible(data)  # parsed before anything is stored
+    # Parsed in full before anything is written: a file that fails here leaves no
+    # object in storage, no Dataset row and no audit event.
+    df = _parse_upload(data)
     organisation_id = current_organisation_id()
     dataset_id = uuid.uuid4()
     dataset = Dataset(
@@ -250,6 +273,8 @@ def upload_train():
             flash("Training dataset uploaded successfully.", "success")
             return redirect(url_for("upload_train"))
 
+        except RequestEntityTooLarge:
+            raise  # handled by upload_too_large
         except Exception as e:
             db.session.rollback()
             flash(f"Upload failed: {str(e)}", "danger")
@@ -284,6 +309,8 @@ def upload_predict():
             flash("Prediction dataset uploaded successfully.", "success")
             return redirect(url_for("upload_predict"))
 
+        except RequestEntityTooLarge:
+            raise  # handled by upload_too_large
         except Exception as e:
             db.session.rollback()
             flash(f"Upload failed: {str(e)}", "danger")
@@ -497,6 +524,8 @@ def upload_actual():
             flash("Actual results dataset uploaded successfully.", "success")
             return redirect(url_for("upload_actual"))
 
+        except RequestEntityTooLarge:
+            raise  # handled by upload_too_large
         except Exception as e:
             db.session.rollback()
             flash(f"Upload failed: {str(e)}", "danger")
@@ -627,6 +656,9 @@ def healthz():
         return {"status": "unavailable"}, 503
     return {"status": "ok"}
 
+def upload_too_large(error):
+    return render_template("error.html", message="That file is larger than the 5 MB upload limit."), 413
+
 def forbidden(error):
     return render_template("error.html", message="You do not have permission to do that."), 403
 
@@ -652,6 +684,7 @@ def _register_routes(app: Flask) -> None:
     app.add_url_rule("/recheck-comparison", view_func=require_role(viewer)(recheck_comparison), methods=["POST"])
     app.add_url_rule("/healthz", view_func=healthz)
     app.register_error_handler(403, forbidden)
+    app.register_error_handler(413, upload_too_large)
     app.register_error_handler(500, internal_error)
 
 
@@ -662,6 +695,9 @@ def create_app(config: dict | None = None, env: str | None = None) -> Flask:
     if config:
         app.config.update(config)
 
+    # First, so every later component (sessions, rate limits, audit IPs) sees the real
+    # client address rather than the load balancer's.
+    trust_proxy(app)
     db.init_app(app)
     migrate.init_app(app, db)
     app.extensions["storage"] = build_backend(app.config)

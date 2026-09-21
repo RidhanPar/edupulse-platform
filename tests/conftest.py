@@ -27,6 +27,8 @@ def app(tmp_path):
             "STORAGE_LOCAL_ROOT": str(tmp_path / "storage"),
             # tests/test_csrf.py runs with CSRF enabled; everywhere else it would only add token plumbing.
             "WTF_CSRF_ENABLED": False,
+            # tests/test_hardening.py runs with rate limits on; elsewhere they would trip on repeated logins.
+            "RATELIMIT_ENABLED": False,
         },
         env="testing",
     )

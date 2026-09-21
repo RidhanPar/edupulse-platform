@@ -113,4 +113,12 @@ def build_config(env: str) -> dict:
         "WTF_CSRF_TIME_LIMIT": None,
         "ARGON2_PARAMS": ARGON2_TEST_PARAMS if env == "testing" else ARGON2_PARAMS,
         "MODEL_CACHE_SIZE": 4,
+        # Proxies in front of the app whose X-Forwarded-For / -Proto are trusted. Render
+        # runs exactly one. Set 0 when nothing sits in front, or clients could spoof
+        # their address and slip past the login rate limit.
+        "PROXY_HOPS": int(_env("PROXY_HOPS") or 1),
+        # In-process counters: correct only with a single Gunicorn worker (render.yaml).
+        # Move to Redis (redis://...) before adding workers or instances.
+        "RATELIMIT_STORAGE_URI": "memory://",
+        "RATELIMIT_HEADERS_ENABLED": True,
     }

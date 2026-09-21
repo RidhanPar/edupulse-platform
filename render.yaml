@@ -3,7 +3,10 @@ services:
     name: edupredict
     env: python
     buildCommand: pip install -r requirements.txt
-    startCommand: gunicorn wsgi:app
+    # Exactly one worker: the login rate limiter keeps its counters in process memory
+    # (RATELIMIT_STORAGE_URI=memory://), so each extra worker or instance would multiply
+    # the allowed attempts. Move the limiter to Redis before adding workers or instances.
+    startCommand: gunicorn --workers 1 wsgi:app
     plan: free
     envVars:
       - key: FLASK_SECRET_KEY

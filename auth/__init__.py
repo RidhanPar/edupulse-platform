@@ -13,6 +13,7 @@ from flask import Flask, abort, current_app, flash, g, redirect, render_template
 from flask_login import LoginManager, current_user, logout_user
 from flask_wtf.csrf import CSRFError, CSRFProtect
 
+from auth.ratelimit import init_rate_limits
 from auth.roles import user_has_role
 from auth.sessions import AUTH_TIME_KEY, DatabaseSessionInterface
 from db import db
@@ -89,6 +90,7 @@ def init_auth(app: Flask) -> None:
     login_manager.init_app(app)
     app.before_request(_require_login)
     app.register_blueprint(views.bp)
+    init_rate_limits(app)
     app.register_error_handler(CSRFError, _csrf_failed)
     for command in cli.COMMANDS:
         app.cli.add_command(command)
