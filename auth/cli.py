@@ -8,11 +8,10 @@ from flask.cli import with_appcontext
 from sqlalchemy import select
 
 from auth.invites import issue_invite
-from auth.views import normalise_email
+from auth.views import EMAIL_PATTERN, normalise_email
 from db import db
 from db.models import Organisation, Role, User
 
-EMAIL_PATTERN = re.compile(r"[^@\s]+@[^@\s]+\.[^@\s]+")
 SLUG_PATTERN = re.compile(r"[a-z0-9]+(?:-[a-z0-9]+)*")
 
 base_url_option = click.option(

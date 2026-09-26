@@ -19,9 +19,25 @@ FEATURE_COLUMNS = [
 TARGET_COLUMN = "target"
 
 
+def available_features(df: pd.DataFrame) -> list[str]:
+    """The expected feature columns this file actually has, in the canonical order."""
+    return [c for c in FEATURE_COLUMNS if c in df.columns]
+
+
+def missing_features(df: pd.DataFrame) -> list[str]:
+    """Expected feature columns this file does not have. Training and prediction go on without them."""
+    return [c for c in FEATURE_COLUMNS if c not in df.columns]
+
+
 def validate_columns(df: pd.DataFrame, require_target: bool = True) -> tuple[bool, list[str]]:
-    required = DISPLAY_COLUMNS + FEATURE_COLUMNS + ([TARGET_COLUMN] if require_target else [])
+    """Check the columns a file must have: the display columns, the target when
+    training, and at least one feature. Features that are absent are reported
+    separately by missing_features(); a model is trained on what is present.
+    """
+    required = DISPLAY_COLUMNS + ([TARGET_COLUMN] if require_target else [])
     missing = [c for c in required if c not in df.columns]
+    if not available_features(df):
+        missing.append(f"at least one feature column ({', '.join(FEATURE_COLUMNS)})")
     return len(missing) == 0, missing
 
 
@@ -31,8 +47,8 @@ def build_preprocessing_pipeline() -> Pipeline:
     ])
 
 
-def split_features_target(df: pd.DataFrame):
-    X = df[FEATURE_COLUMNS].copy()
+def split_features_target(df: pd.DataFrame, features: list[str] | None = None):
+    X = df[features if features is not None else available_features(df)].copy()
     y = df[TARGET_COLUMN].copy()
     meta = df[DISPLAY_COLUMNS].copy() if all(c in df.columns for c in DISPLAY_COLUMNS) else None
     return X, y, meta

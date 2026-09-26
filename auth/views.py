@@ -1,6 +1,7 @@
 """Login, logout, password change and invite acceptance."""
 from __future__ import annotations
 
+import re
 import time
 from urllib.parse import urlsplit
 
@@ -23,6 +24,8 @@ bp = Blueprint("auth", __name__)
 # One message for every failure, so a response never reveals whether an address is
 # registered, the password was wrong, the account is deactivated or the organisation
 # suspended. The audit event records the real reason.
+EMAIL_PATTERN = re.compile(r"[^@\s]+@[^@\s]+\.[^@\s]+")
+
 LOGIN_FAILED = "Invalid email or password."
 INVALID_INVITE = "This invite link is invalid or has expired."
 

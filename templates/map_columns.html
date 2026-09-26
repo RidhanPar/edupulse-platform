@@ -1,0 +1,58 @@
+{% extends 'base.html' %}
+{% block title %}EduPulse | Match your columns{% endblock %}
+{% block content %}
+<div class="page-header">
+  <div>
+    <h1>Match Your Columns</h1>
+    <p class="small">
+      Your file <strong>{{ dataset.original_filename }}</strong> uses different column names from the ones
+      EduPulse expects. Choose which of your columns supplies each one. We have pre-selected our best guess.
+      This is saved for your organisation, so later uploads of the same export will not ask again.
+    </p>
+  </div>
+</div>
+
+<div class="card">
+  <form method="post" class="mapping-form">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr><th>EduPulse column</th><th>Your column</th><th>Required</th></tr>
+        </thead>
+        <tbody>
+          {% for field in expected %}
+          <tr>
+            <td><strong>{{ field }}</strong></td>
+            <td>
+              <select name="{{ field }}">
+                <option value="">— not in this file —</option>
+                {% for column in columns %}
+                <option value="{{ column }}" {% if selected.get(field) == column %}selected{% endif %}>{{ column }}</option>
+                {% endfor %}
+              </select>
+            </td>
+            <td class="small">
+              {% if field in required %}Required{% elif field in features %}At least one feature{% else %}Optional{% endif %}
+            </td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    <div class="hero-actions">
+      <button class="btn" type="submit">Save Mapping</button>
+      <a class="btn btn-secondary" href="{{ url_for('home') }}">Cancel</a>
+    </div>
+  </form>
+</div>
+
+<div class="card">
+  <h3>Columns in your file</h3>
+  <p class="small">{{ columns|join(', ') }}</p>
+  <p class="small">
+    Features you do not supply are simply left out: the model is trained on the columns you do provide,
+    and the explanation page lists them. Nothing is invented to fill a gap.
+  </p>
+</div>
+{% endblock %}

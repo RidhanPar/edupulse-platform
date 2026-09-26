@@ -9,18 +9,21 @@ from datetime import datetime, timedelta, timezone
 import pandas as pd
 from flask import Flask, render_template, request, redirect, url_for, flash, Response, current_app
 from flask_login import current_user
-from sqlalchemy import text
+from sqlalchemy import select, text
 from werkzeug.exceptions import RequestEntityTooLarge
 
 from auth import check_route_roles, init_auth
+from auth.invites import issue_invite
 from auth.ratelimit import trust_proxy
 from auth.roles import require_role
 from config import build_config, resolve_env
 from db import db, migrate
 from db.audit import AUDIT_ACTIONS, AUDIT_PAGE_SIZE, AuditFilters, audit_page, decode_cursor, record_audit_event
-from db.models import Dataset, DatasetKind, ModelArtifact, Role, User
-from db.tenancy import scoped_get, scoped_select
+from db.models import ColumnMapping, Dataset, DatasetKind, ModelArtifact, Role, User
+from db.tenancy import scoped_get, scoped_get_or_404, scoped_select
+from utils.column_mapping import apply_mapping, guess_mapping, mapping_problems
 from utils.evaluation import load_importances, load_metrics, load_model_comparison
+from utils.filters import ResultFilters
 from utils.model_cache import ModelCache
 from utils.storage import build_backend, dataset_key, model_key, storage_for
 
@@ -59,7 +62,59 @@ def _latest_dataset(kind: DatasetKind) -> Dataset | None:
 
 def _read_dataset(dataset: Dataset) -> pd.DataFrame:
     # Authorised against the requesting organisation, not the dataset's own.
-    return read_csv_flexible(storage_for(current_organisation_id()).get(dataset.storage_key))
+    data = storage_for(current_organisation_id()).get(dataset.storage_key)
+    # Files are stored exactly as uploaded; the organisation's mapping is applied on read,
+    # so confirming a mapping fixes datasets that were already uploaded.
+    return _mapped(read_csv_flexible(data), dataset.kind)
+
+
+def _stored_mapping(kind: DatasetKind) -> ColumnMapping | None:
+    return db.session.scalars(
+        scoped_select(ColumnMapping, current_organisation_id()).where(ColumnMapping.kind == kind)
+    ).one_or_none()
+
+
+def _mapped(df: pd.DataFrame, kind: DatasetKind) -> pd.DataFrame:
+    record = _stored_mapping(kind)
+    return apply_mapping(df, record.mapping if record else None)
+
+
+def _expected_columns(kind: DatasetKind) -> tuple[list[str], list[str]]:
+    """(columns this kind of file can supply, the ones it must supply)."""
+    from utils.preprocessing import DISPLAY_COLUMNS, FEATURE_COLUMNS, TARGET_COLUMN
+
+    if kind is DatasetKind.ACTUAL:
+        return ["student_id", TARGET_COLUMN], ["student_id", TARGET_COLUMN]
+    target = [TARGET_COLUMN] if kind is DatasetKind.TRAINING else []
+    return DISPLAY_COLUMNS + FEATURE_COLUMNS + target, DISPLAY_COLUMNS + target
+
+
+def _missing_columns(dataset: Dataset) -> list[str]:
+    """Required columns still missing once the organisation's mapping is applied."""
+    from utils.preprocessing import validate_columns
+
+    try:
+        df = _read_dataset(dataset)
+    except Exception:
+        return []
+    if dataset.kind is DatasetKind.ACTUAL:
+        return [column for column in _expected_columns(dataset.kind)[1] if column not in df.columns]
+    ok, missing = validate_columns(df, require_target=dataset.kind is DatasetKind.TRAINING)
+    return [] if ok else missing
+
+
+def _needs_mapping(dataset: Dataset) -> bool:
+    """Warn and send the uploader to the mapping screen rather than failing the upload."""
+    missing = _missing_columns(dataset)
+    if not missing:
+        return False
+    flash(
+        "We could not find these columns in your file: "
+        + ", ".join(missing)
+        + ". Match them to your own column names below.",
+        "warning",
+    )
+    return True
 
 
 class UploadRejected(ValueError):
@@ -139,6 +194,7 @@ def _save_model(artifacts, training_dataset: Dataset) -> ModelArtifact:
         id=artifact_id,
         organisation_id=organisation_id,
         algorithm_name=artifacts.model_name,
+        features=artifacts.features,
         metrics=artifacts.metrics,
         feature_importances=artifacts.feature_importances,
         model_comparison=artifacts.model_comparison,
@@ -158,15 +214,14 @@ def _save_model(artifacts, training_dataset: Dataset) -> ModelArtifact:
         user=current_user,
         entity_type="model_artifact",
         entity_id=artifact.id,
-        details={"algorithm": artifact.algorithm_name, "training_dataset_id": str(training_dataset.id)},
+        details={
+            "algorithm": artifact.algorithm_name,
+            "training_dataset_id": str(training_dataset.id),
+            "features": artifact.features,
+        },
     )
     db.session.commit()
     return artifact
-
-
-def _active_filters(name_query: str, risk_filter: str, prediction_filter: str) -> dict:
-    filters = {"name": name_query, "risk": risk_filter, "prediction": prediction_filter}
-    return {key: value for key, value in filters.items() if value}
 
 
 def _record_prediction_use(action: str, artifact: ModelArtifact, *, row_count: int, **details) -> None:
@@ -269,7 +324,9 @@ def upload_train():
                 flash("Only CSV files are allowed for training upload.", "danger")
                 return redirect(url_for("upload_train"))
 
-            _store_upload(file, DatasetKind.TRAINING)
+            dataset = _store_upload(file, DatasetKind.TRAINING)
+            if _needs_mapping(dataset):
+                return redirect(url_for("map_columns", dataset_id=dataset.id))
             flash("Training dataset uploaded successfully.", "success")
             return redirect(url_for("upload_train"))
 
@@ -305,7 +362,9 @@ def upload_predict():
                 flash("Only CSV files are allowed for prediction upload.", "danger")
                 return redirect(url_for("upload_predict"))
 
-            _store_upload(file, DatasetKind.PREDICTION)
+            dataset = _store_upload(file, DatasetKind.PREDICTION)
+            if _needs_mapping(dataset):
+                return redirect(url_for("map_columns", dataset_id=dataset.id))
             flash("Prediction dataset uploaded successfully.", "success")
             return redirect(url_for("upload_predict"))
 
@@ -380,28 +439,13 @@ def results():
         return redirect(url_for("upload_predict"))
 
     try:
-        res = predict_dataframe(df, _load_model(artifact))
+        res = predict_dataframe(df, _load_model(artifact), artifact.features)
     except Exception as e:
         flash(f"Prediction failed: {str(e)}", "danger")
         return redirect(url_for("upload_predict"))
 
-    name_query = request.args.get("name", "").strip().lower()
-    risk_filter = request.args.get("risk", "").strip()
-    prediction_filter = request.args.get("prediction", "").strip()
-
-    filtered = res.copy()
-
-    if name_query:
-        filtered = filtered[
-            filtered["student_name"].astype(str).str.lower().str.contains(name_query)
-            | filtered["student_id"].astype(str).str.lower().str.contains(name_query)
-        ]
-
-    if risk_filter:
-        filtered = filtered[filtered["risk_level"] == risk_filter]
-
-    if prediction_filter:
-        filtered = filtered[filtered["prediction"] == prediction_filter]
+    filters = ResultFilters.from_args(request.args)
+    filtered = filters.apply(res)
 
     summary = {
         "total": int(len(filtered)),
@@ -418,16 +462,16 @@ def results():
         artifact,
         row_count=summary["total"],
         page="results",
-        filters=_active_filters(name_query, risk_filter, prediction_filter),
+        filters=filters.applied(),
     )
 
     return render_template(
         "results.html",
         records=records,
         summary=summary,
-        name_query=name_query,
-        risk_filter=risk_filter,
-        prediction_filter=prediction_filter
+        name_query=filters.name,
+        risk_filter=filters.risk,
+        prediction_filter=filters.prediction
     )
 
 def download_results():
@@ -444,28 +488,13 @@ def download_results():
         return redirect(url_for("upload_predict"))
 
     try:
-        res = predict_dataframe(df, _load_model(artifact))
+        res = predict_dataframe(df, _load_model(artifact), artifact.features)
     except Exception as e:
         flash(f"Prediction failed: {str(e)}", "danger")
         return redirect(url_for("upload_predict"))
 
-    name_query = request.args.get("name", "").strip().lower()
-    risk_filter = request.args.get("risk", "").strip()
-    prediction_filter = request.args.get("prediction", "").strip()
-
-    filtered = res.copy()
-
-    if name_query:
-        filtered = filtered[
-            filtered["student_name"].astype(str).str.lower().str.contains(name_query)
-            | filtered["student_id"].astype(str).str.lower().str.contains(name_query)
-        ]
-
-    if risk_filter:
-        filtered = filtered[filtered["risk_level"] == risk_filter]
-
-    if prediction_filter:
-        filtered = filtered[filtered["prediction"] == prediction_filter]
+    filters = ResultFilters.from_args(request.args)
+    filtered = filters.apply(res)
 
     export_cols = [
         "student_id",
@@ -485,7 +514,7 @@ def download_results():
         "results_exported",
         artifact,
         row_count=len(filtered),
-        filters=_active_filters(name_query, risk_filter, prediction_filter),
+        filters=filters.applied(),
     )
 
     return Response(
@@ -495,6 +524,8 @@ def download_results():
     )
 
 def explain():
+    from utils.preprocessing import FEATURE_COLUMNS
+
     artifact = _active_model()
     importances = load_importances(artifact)
     metrics = load_metrics(artifact)
@@ -502,7 +533,14 @@ def explain():
         flash("Train the model first to generate explanations.", "warning")
         return redirect(url_for("train"))
     ranked = sorted(importances.items(), key=lambda x: x[1], reverse=True)
-    return render_template("explain.html", ranked=ranked, metrics=metrics)
+    return render_template(
+        "explain.html",
+        ranked=ranked,
+        metrics=metrics,
+        features=artifact.features,
+        # Named so nobody reads the model as having weighed something it never saw.
+        features_not_supplied=[column for column in FEATURE_COLUMNS if column not in artifact.features],
+    )
 
 
 def about():
@@ -520,7 +558,9 @@ def upload_actual():
                 flash("Only CSV files are allowed for actual results upload.", "danger")
                 return redirect(url_for("upload_actual"))
 
-            _store_upload(file, DatasetKind.ACTUAL)
+            dataset = _store_upload(file, DatasetKind.ACTUAL)
+            if _needs_mapping(dataset):
+                return redirect(url_for("map_columns", dataset_id=dataset.id))
             flash("Actual results dataset uploaded successfully.", "success")
             return redirect(url_for("upload_actual"))
 
@@ -561,7 +601,7 @@ def compare():
         return render_template("compare.html", records=None, metrics=None)
 
     try:
-        predicted_results = predict_dataframe(pred_df, _load_model(artifact))
+        predicted_results = predict_dataframe(pred_df, _load_model(artifact), artifact.features)
         comparison_df, comparison_metrics = compare_predictions_with_actual(predicted_results, actual_df)
         records = comparison_df.head(200).to_dict(orient="records")
         _record_prediction_use(
@@ -579,6 +619,182 @@ def compare():
 def recheck_comparison():
     flash("Comparison metrics refreshed using the current prediction and actual results files.", "success")
     return redirect(url_for("compare"))
+
+UPLOAD_ENDPOINTS = {
+    DatasetKind.TRAINING: "upload_train",
+    DatasetKind.PREDICTION: "upload_predict",
+    DatasetKind.ACTUAL: "upload_actual",
+}
+
+
+def _save_mapping(kind: DatasetKind, mapping: dict) -> None:
+    record = _stored_mapping(kind)
+    if record is None:
+        record = ColumnMapping(organisation_id=current_organisation_id(), kind=kind, mapping=mapping,
+                               updated_by=current_user.id)
+        db.session.add(record)
+    else:
+        record.mapping = mapping
+        record.updated_by = current_user.id
+    record_audit_event(
+        "column_mapping_saved",
+        user=current_user,
+        entity_type="column_mapping",
+        entity_id=record.id,
+        details={"kind": kind.value, "mapping": mapping},
+    )
+    db.session.commit()
+
+
+def map_columns(dataset_id):
+    """Match an institution's own column names to the ones the application expects.
+
+    Files are stored as uploaded and the mapping is applied when they are read, so
+    confirming a mapping here also fixes the dataset that prompted it. The mapping is
+    kept for the organisation, and later uploads of the same export need no mapping.
+    """
+    from utils.preprocessing import FEATURE_COLUMNS
+
+    dataset = scoped_get_or_404(Dataset, current_organisation_id(), dataset_id)
+    expected, required = _expected_columns(dataset.kind)
+    columns = list(dataset.column_names)
+    features = [field for field in expected if field in FEATURE_COLUMNS]
+    selected = {}
+
+    if request.method == "POST":
+        selected = {field: request.form.get(field, "").strip() for field in expected}
+        chosen = {field: source for field, source in selected.items() if source}
+        problems = mapping_problems(chosen, columns, required)
+        if features and not any(chosen.get(field) for field in features):
+            problems.append(f"Map at least one feature column ({', '.join(features)}).")
+        if problems:
+            for problem in problems:
+                flash(problem, "danger")
+        else:
+            _save_mapping(dataset.kind, chosen)
+            flash("Column mapping saved. Future uploads of this file format will use it.", "success")
+            return redirect(url_for(UPLOAD_ENDPOINTS[dataset.kind]))
+    else:
+        stored = _stored_mapping(dataset.kind)
+        selected = guess_mapping(expected, columns)
+        for field, source in (stored.mapping if stored else {}).items():
+            if field in expected and source in columns:
+                selected[field] = source
+
+    return render_template(
+        "map_columns.html",
+        dataset=dataset,
+        columns=columns,
+        expected=expected,
+        required=required,
+        features=features,
+        selected=selected,
+    )
+
+
+def _organisation_users() -> list[User]:
+    return db.session.scalars(scoped_select(User, current_organisation_id()).order_by(User.email)).all()
+
+
+def _is_last_active_owner(user: User) -> bool:
+    """The organisation must keep at least one active owner, or nobody can administer it."""
+    if user.role is not Role.OWNER or not user.is_active:
+        return False
+    return not [
+        other
+        for other in _organisation_users()
+        if other.id != user.id and other.role is Role.OWNER and other.is_active
+    ]
+
+
+def _invite_link(token: str) -> str:
+    return url_for("auth.invite", token=token, _external=True)
+
+
+def users():
+    return render_template("users.html", users=_organisation_users(), roles=list(Role))
+
+
+def invite_user():
+    from auth.views import EMAIL_PATTERN, normalise_email
+
+    email = normalise_email(request.form.get("email"))
+    role = request.form.get("role", "")
+    if not EMAIL_PATTERN.fullmatch(email) or len(email) > 320:
+        flash(f"{request.form.get('email', '')!r} is not a valid email address.", "danger")
+    elif role not in {member.value for member in Role}:
+        flash("Choose a role for the new user.", "danger")
+    elif db.session.scalars(select(User.id).where(User.email == email)).first() is not None:
+        # Deliberately the same message whether the address belongs to this organisation
+        # or another one: an owner cannot use this to discover other customers' users.
+        flash(f"{email} cannot be invited: the address is already in use.", "danger")
+    else:
+        user = User(organisation_id=current_organisation_id(), email=email, role=Role(role))
+        token = issue_invite(user)
+        db.session.add(user)
+        db.session.flush()
+        record_audit_event("user_invited", user=current_user, entity_type="user", entity_id=user.id,
+                           details={"email": email, "role": role})
+        db.session.commit()
+        flash(f"Invite link for {email} (one use, expires in 7 days): {_invite_link(token)}", "success")
+    return redirect(url_for("users"))
+
+
+def change_user_role(user_id):
+    user = scoped_get_or_404(User, current_organisation_id(), user_id)
+    role = request.form.get("role", "")
+    if role not in {member.value for member in Role}:
+        flash("Choose a role.", "danger")
+    elif Role(role) is user.role:
+        flash(f"{user.email} is already {role}.", "warning")
+    elif Role(role) is not Role.OWNER and _is_last_active_owner(user):
+        flash(f"{user.email} is the only active owner. Make someone else an owner first.", "danger")
+    else:
+        previous = user.role
+        user.role = Role(role)
+        record_audit_event("user_role_changed", user=current_user, entity_type="user", entity_id=user.id,
+                           details={"email": user.email, "from": previous.value, "to": role})
+        db.session.commit()
+        flash(f"{user.email} is now {role}.", "success")
+    return redirect(url_for("users"))
+
+
+def set_user_status(user_id):
+    user = scoped_get_or_404(User, current_organisation_id(), user_id)
+    activate = request.form.get("active") == "true"
+    if not activate and _is_last_active_owner(user):
+        flash(f"{user.email} is the only active owner. Make someone else an owner first.", "danger")
+    elif user.is_active == activate:
+        flash(f"{user.email} is already {'active' if activate else 'deactivated'}.", "warning")
+    else:
+        user.is_active = activate
+        record_audit_event(
+            "user_reactivated" if activate else "user_deactivated",
+            user=current_user,
+            entity_type="user",
+            entity_id=user.id,
+            details={"email": user.email},
+        )
+        db.session.commit()
+        if not activate:
+            # Deactivation takes effect now, not when their session happens to expire.
+            current_app.session_interface.revoke_user_sessions(user.id)
+        flash(f"{user.email} is now {'active' if activate else 'deactivated'}.", "success")
+    return redirect(url_for("users"))
+
+
+def reissue_user_invite(user_id):
+    user = scoped_get_or_404(User, current_organisation_id(), user_id)
+    if user.password_hash is not None:
+        flash(f"{user.email} has already set a password.", "warning")
+    else:
+        token = issue_invite(user)
+        record_audit_event("invite_reissued", user=current_user, entity_type="user", entity_id=user.id,
+                           details={"email": user.email})
+        db.session.commit()
+        flash(f"New invite link for {user.email} (the previous link no longer works): {_invite_link(token)}", "success")
+    return redirect(url_for("users"))
+
 
 def _parse_day(value: str) -> datetime | None:
     return datetime.strptime(value, "%Y-%m-%d").replace(tzinfo=timezone.utc)
@@ -679,6 +895,12 @@ def _register_routes(app: Flask) -> None:
     app.add_url_rule("/explain", view_func=require_role(viewer)(explain))
     app.add_url_rule("/about", view_func=require_role(viewer)(about))
     app.add_url_rule("/audit", view_func=require_role(owner)(audit_log))
+    app.add_url_rule("/map-columns/<dataset_id>", view_func=require_role(staff)(map_columns), methods=["GET", "POST"])
+    app.add_url_rule("/users", view_func=require_role(owner)(users))
+    app.add_url_rule("/users/invite", view_func=require_role(owner)(invite_user), methods=["POST"])
+    app.add_url_rule("/users/<user_id>/role", view_func=require_role(owner)(change_user_role), methods=["POST"])
+    app.add_url_rule("/users/<user_id>/status", view_func=require_role(owner)(set_user_status), methods=["POST"])
+    app.add_url_rule("/users/<user_id>/invite", view_func=require_role(owner)(reissue_user_invite), methods=["POST"])
     app.add_url_rule("/upload-actual", view_func=require_role(staff)(upload_actual), methods=["GET", "POST"])
     app.add_url_rule("/compare", view_func=require_role(viewer)(compare))
     app.add_url_rule("/recheck-comparison", view_func=require_role(viewer)(recheck_comparison), methods=["POST"])

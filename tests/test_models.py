@@ -32,6 +32,7 @@ def _artifact(organisation, user, active: bool) -> ModelArtifact:
     return ModelArtifact(
         organisation_id=organisation.id,
         algorithm_name="Decision Tree",
+        features=["attendance", "quiz_score"],
         metrics={"f1": 0.8},
         feature_importances={"attendance": 0.4},
         model_comparison=[{"model": "Decision Tree", "f1": 0.8}],

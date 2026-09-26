@@ -476,6 +476,37 @@ input[type="date"] {
   white-space: nowrap;
 }
 
+.inline-form {
+  display: inline-flex;
+  gap: 6px;
+  align-items: center;
+  margin: 0;
+}
+
+.user-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.mapping-form .hero-actions {
+  margin-top: 18px;
+}
+
+.mapping-form select {
+  min-width: 220px;
+}
+
+input[type="email"] {
+  min-height: 46px;
+  padding: 10px 14px;
+  border: 1px solid var(--border-strong);
+  border-radius: 12px;
+  background: #fff;
+  font-size: 0.96rem;
+  color: var(--text);
+}
+
 .audit-user-agent {
   max-width: 260px;
   word-break: break-all;

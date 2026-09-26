@@ -13,6 +13,18 @@
 </div>
 {% endif %}
 
+<div class="card">
+  <h3>Features This Model Used</h3>
+  <p class="small">{{ features|join(', ') }}</p>
+  {% if features_not_supplied %}
+  <p class="small">
+    <strong>Not supplied by your training file:</strong> {{ features_not_supplied|join(', ') }}.
+    The model was trained without them, so they carry no weight in these predictions. Nothing was
+    substituted in their place. Include those columns in a new training file to use them.
+  </p>
+  {% endif %}
+</div>
+
 <div class="table-card">
   <div class="table-wrap">
     <table>

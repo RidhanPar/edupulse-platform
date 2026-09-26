@@ -63,7 +63,7 @@ def test_every_protected_route_redirects_anonymous_users_to_login(app, client):
         assert location.path == "/login", rule.rule
         assert parse_qs(location.query)["next"] == [rule.rule], rule.rule
         checked.append(rule.rule)
-    assert len(checked) == 14
+    assert len(checked) == 20
 
 
 def test_api_requests_get_401_instead_of_a_login_redirect(app, client):

@@ -142,6 +142,7 @@ def ready_tenant(tenant, upload, csv_fixtures, trained):
             id=artifact_id,
             organisation_id=ready.organisation.id,
             algorithm_name=trained.model_name,
+            features=trained.features,
             metrics=trained.metrics,
             feature_importances=trained.feature_importances,
             model_comparison=trained.model_comparison,

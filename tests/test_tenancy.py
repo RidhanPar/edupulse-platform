@@ -27,6 +27,7 @@ def _seed(organisation, user) -> dict:
         ModelArtifact: ModelArtifact(
             organisation_id=organisation.id,
             algorithm_name="Random Forest",
+            features=["attendance"],
             metrics={},
             feature_importances={},
             model_comparison=[],

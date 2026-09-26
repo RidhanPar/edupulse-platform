@@ -25,6 +25,8 @@ ROLE_MAP = [
     ("GET", "/download-results", Role.STAFF),
     ("POST", "/train", Role.OWNER),
     ("GET", "/audit", Role.OWNER),
+    ("GET", "/users", Role.OWNER),
+    ("POST", "/users/invite", Role.OWNER),
 ]
 
 
@@ -79,3 +81,4 @@ def test_pages_only_offer_actions_the_role_can_perform(ready_tenant, role, can_u
     assert ("Upload Train Data" in home) is can_upload_and_export
     assert ("Train Models" in client.get("/train").get_data(as_text=True)) is is_owner
     assert ("Audit Log" in home) is is_owner
+    assert ("Users" in home) is is_owner

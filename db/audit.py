@@ -38,6 +38,12 @@ AUDIT_ACTIONS = (
     "model_trained",
     "prediction_run",
     "results_exported",
+    "column_mapping_saved",
+    "user_invited",
+    "user_role_changed",
+    "user_deactivated",
+    "user_reactivated",
+    "invite_reissued",
 )
 
 # Fixed server-side page size. The table only grows, so no caller may ask for more.

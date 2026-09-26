@@ -14,7 +14,7 @@ from sklearn.pipeline import Pipeline
 from sklearn.tree import DecisionTreeClassifier
 from sklearn.svm import SVC
 
-from utils.preprocessing import build_preprocessing_pipeline, split_features_target, FEATURE_COLUMNS
+from utils.preprocessing import available_features, build_preprocessing_pipeline, split_features_target
 
 
 @dataclass
@@ -24,6 +24,8 @@ class TrainingArtifacts:
     feature_importances: dict
     model_comparison: list[dict]
     model: Pipeline
+    # The feature columns the file actually supplied, in the order the model expects them.
+    features: list[str]
 
 
 def _candidate_models() -> dict:
@@ -46,7 +48,13 @@ def _extract_feature_importances(model_obj, feature_names):
 
 
 def train_and_select_best(df: pd.DataFrame) -> TrainingArtifacts:
-    X, y, _ = split_features_target(df)
+    # Train on the features this file supplies. A column that is absent is absent: it is
+    # never filled with a constant and passed off as data the institution provided.
+    features = available_features(df)
+    if not features:
+        raise ValueError("the training dataset has none of the expected feature columns")
+
+    X, y, _ = split_features_target(df, features)
 
     X_train, X_test, y_train, y_test = train_test_split(
         X, y, test_size=0.25, random_state=42, stratify=y
@@ -96,7 +104,7 @@ def train_and_select_best(df: pd.DataFrame) -> TrainingArtifacts:
             best_name = name
             best_pipe = pipe
             best_metrics = metrics
-            best_importances = _extract_feature_importances(pipe.named_steps["model"], FEATURE_COLUMNS)
+            best_importances = _extract_feature_importances(pipe.named_steps["model"], features)
 
     return TrainingArtifacts(
         model_name=best_name,
@@ -104,6 +112,7 @@ def train_and_select_best(df: pd.DataFrame) -> TrainingArtifacts:
         feature_importances=best_importances,
         model_comparison=comparison_rows,
         model=best_pipe,
+        features=features,
     )
 
 

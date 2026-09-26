@@ -16,9 +16,9 @@ from flask import abort
 from sqlalchemy import Select, select
 
 from db import db
-from db.models import AuditEvent, Dataset, ModelArtifact, User
+from db.models import AuditEvent, ColumnMapping, Dataset, ModelArtifact, User
 
-TENANT_MODELS = (Dataset, ModelArtifact, AuditEvent, User)
+TENANT_MODELS = (Dataset, ModelArtifact, AuditEvent, User, ColumnMapping)
 
 
 class TenancyError(RuntimeError):

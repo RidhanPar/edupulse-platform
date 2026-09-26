@@ -1,0 +1,73 @@
+{% extends 'base.html' %}
+{% block title %}EduPulse | Users{% endblock %}
+{% block content %}
+<div class="page-header">
+  <div>
+    <h1>Users</h1>
+    <p class="small">
+      Everyone with access to {{ current_user.organisation.name }}. Accounts are never deleted, because
+      uploads, models and audit records refer to them; deactivate instead, which ends their sessions at once.
+    </p>
+  </div>
+</div>
+
+<div class="card">
+  <h3>Invite a User</h3>
+  <form method="post" action="{{ url_for('invite_user') }}" class="upload-form">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+    <input type="email" name="email" placeholder="name@institution.ac.uk" required>
+    <select name="role">
+      {% for role in roles %}<option value="{{ role.value }}">{{ role.value }}</option>{% endfor %}
+    </select>
+    <button class="btn" type="submit">Create Invite Link</button>
+  </form>
+  <p class="small">The invite link is shown once here. Send it to them yourself; it works once and expires in 7 days.</p>
+</div>
+
+<div class="table-card">
+  <div class="table-wrap">
+    <table>
+      <thead>
+        <tr><th>Email</th><th>Role</th><th>Status</th><th>Last login (UTC)</th><th>Actions</th></tr>
+      </thead>
+      <tbody>
+        {% for user in users %}
+        <tr class="user-row">
+          <td>{{ user.email }}{% if user.id == current_user.id %} <span class="small">(you)</span>{% endif %}</td>
+          <td>
+            <form method="post" action="{{ url_for('change_user_role', user_id=user.id) }}" class="inline-form">
+              <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+              <select name="role">
+                {% for role in roles %}
+                <option value="{{ role.value }}" {% if user.role == role %}selected{% endif %}>{{ role.value }}</option>
+                {% endfor %}
+              </select>
+              <button class="btn btn-secondary" type="submit">Change</button>
+            </form>
+          </td>
+          <td>
+            {% if not user.is_active %}<span class="badge badge-high">Deactivated</span>
+            {% elif user.password_hash is none %}<span class="badge badge-medium">Invite pending</span>
+            {% else %}<span class="badge badge-low">Active</span>{% endif %}
+          </td>
+          <td>{{ user.last_login_at.strftime('%Y-%m-%d %H:%M') if user.last_login_at else '—' }}</td>
+          <td class="user-actions">
+            <form method="post" action="{{ url_for('set_user_status', user_id=user.id) }}" class="inline-form">
+              <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+              <input type="hidden" name="active" value="{{ 'false' if user.is_active else 'true' }}">
+              <button class="btn btn-secondary" type="submit">{{ 'Deactivate' if user.is_active else 'Reactivate' }}</button>
+            </form>
+            {% if user.password_hash is none and user.is_active %}
+            <form method="post" action="{{ url_for('reissue_user_invite', user_id=user.id) }}" class="inline-form">
+              <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+              <button class="btn btn-secondary" type="submit">New Invite Link</button>
+            </form>
+            {% endif %}
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+{% endblock %}

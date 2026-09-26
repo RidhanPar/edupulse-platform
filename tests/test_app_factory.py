@@ -169,6 +169,13 @@ EXPECTED_ROUTES = {
     ("/healthz", "healthz", frozenset({"GET"})),
     # Added with the audit log:
     ("/audit", "audit_log", frozenset({"GET"})),
+    # Added with column mapping and user management:
+    ("/map-columns/<dataset_id>", "map_columns", frozenset({"GET", "POST"})),
+    ("/users", "users", frozenset({"GET"})),
+    ("/users/invite", "invite_user", frozenset({"POST"})),
+    ("/users/<user_id>/role", "change_user_role", frozenset({"POST"})),
+    ("/users/<user_id>/status", "set_user_status", frozenset({"POST"})),
+    ("/users/<user_id>/invite", "reissue_user_invite", frozenset({"POST"})),
 }
 
 

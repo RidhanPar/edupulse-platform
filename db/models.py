@@ -21,6 +21,7 @@ from sqlalchemy import (
     Integer,
     LargeBinary,
     String,
+    UniqueConstraint,
     Uuid,
     event,
     text,
@@ -190,6 +191,9 @@ class ModelArtifact(db.Model):
     id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
     organisation_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("organisations.id"), index=True)
     algorithm_name: Mapped[str] = mapped_column(String(100))
+    # The feature columns the training file supplied, in the order the model expects.
+    # A model can only be applied to a dataset that has all of them.
+    features: Mapped[list[str]] = mapped_column(JSON)
     metrics: Mapped[dict] = mapped_column(JSON)
     feature_importances: Mapped[dict] = mapped_column(JSON)
     model_comparison: Mapped[list[dict]] = mapped_column(JSON)
@@ -226,6 +230,24 @@ class AuditEvent(db.Model):
     # Structured context, e.g. the row count and applied filters of an export.
     details: Mapped[dict | None] = mapped_column(JSON)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class ColumnMapping(db.Model):
+    """How one organisation's own CSV headers map onto the columns the app expects.
+
+    Stored per dataset kind and reused by later uploads, so an institution confirms its
+    export format once. mapping is {expected column: the file's column}.
+    """
+
+    __tablename__ = "column_mappings"
+    __table_args__ = (UniqueConstraint("organisation_id", "kind", name="uq_column_mappings_organisation_id_kind"),)
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    organisation_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("organisations.id"), index=True)
+    kind: Mapped[DatasetKind] = mapped_column(_enum(DatasetKind, "dataset_kind"))
+    mapping: Mapped[dict] = mapped_column(JSON)
+    updated_by: Mapped[uuid.UUID] = mapped_column(_user_fk())
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
 
 
 class UserSession(db.Model):

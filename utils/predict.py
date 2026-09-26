@@ -24,8 +24,19 @@ def load_model(data: bytes):
     return joblib.load(io.BytesIO(data))
 
 
-def predict_dataframe(df: pd.DataFrame, model) -> pd.DataFrame:
-    X = df[FEATURE_COLUMNS].copy()
+def predict_dataframe(df: pd.DataFrame, model, features: list[str]) -> pd.DataFrame:
+    """Predict using exactly the features the model was trained on.
+
+    A model cannot be applied to a file that lacks one of them: filling the gap with a
+    constant would be inventing data, so this refuses instead.
+    """
+    absent = [feature for feature in features if feature not in df.columns]
+    if absent:
+        raise ValueError(
+            "the prediction dataset is missing columns this model was trained on: " + ", ".join(absent)
+        )
+
+    X = df[features].copy()
 
     preds = model.predict(X)
     probs = model.predict_proba(X)[:, 1] if hasattr(model, "predict_proba") else [0.5] * len(df)
@@ -37,7 +48,7 @@ def predict_dataframe(df: pd.DataFrame, model) -> pd.DataFrame:
     result["risk_level"] = [risk_from_probability(float(p)) for p in probs]
     result["recommendation"] = result.apply(recommendation_from_row, axis=1)
 
-    ordered_cols = DISPLAY_COLUMNS + FEATURE_COLUMNS + [
+    ordered_cols = DISPLAY_COLUMNS + features + [
         "prediction", "fail_probability", "confidence", "risk_level", "recommendation"
     ]
     return result[ordered_cols]

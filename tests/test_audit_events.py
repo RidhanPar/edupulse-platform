@@ -46,7 +46,11 @@ def test_model_training_is_audited(tenant, upload, csv_fixtures):
     [artifact] = db.session.scalars(scoped_select(ModelArtifact, alpha.organisation.id)).all()
     [event] = _events(alpha.organisation, "model_trained")
     assert (event.user_id, event.entity_type, event.entity_id) == (alpha.user.id, "model_artifact", str(artifact.id))
-    assert event.details == {"algorithm": artifact.algorithm_name, "training_dataset_id": str(dataset.id)}
+    assert event.details == {
+        "algorithm": artifact.algorithm_name,
+        "training_dataset_id": str(dataset.id),
+        "features": artifact.features,
+    }
 
 
 def test_viewing_results_records_a_prediction_run_with_its_filters(ready_tenant):
