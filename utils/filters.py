@@ -10,23 +10,29 @@ from dataclasses import dataclass
 import pandas as pd
 
 
+RISK_CHANGES = ("up", "down", "same", "new")
+
+
 @dataclass(frozen=True)
 class ResultFilters:
     name: str = ""  # matches student name or id, case-insensitively
     risk: str = ""
     prediction: str = ""
+    change: str = ""  # risk since the previous run: up, down, same or new
 
     @classmethod
     def from_args(cls, args) -> ResultFilters:
+        change = args.get("change", "").strip()
         return cls(
             name=args.get("name", "").strip().lower(),
             risk=args.get("risk", "").strip(),
             prediction=args.get("prediction", "").strip(),
+            change=change if change in RISK_CHANGES else "",
         )
 
     def applied(self) -> dict:
         """Only the filters actually in use, as recorded on the audit event."""
-        pairs = (("name", self.name), ("risk", self.risk), ("prediction", self.prediction))
+        pairs = (("name", self.name), ("risk", self.risk), ("prediction", self.prediction), ("change", self.change))
         return {field: value for field, value in pairs if value}
 
     def apply(self, results: pd.DataFrame) -> pd.DataFrame:
@@ -43,5 +49,8 @@ class ResultFilters:
 
         if self.prediction:
             filtered = filtered[filtered["prediction"] == self.prediction]
+
+        if self.change and "risk_change" in filtered.columns:
+            filtered = filtered[filtered["risk_change"] == self.change]
 
         return filtered

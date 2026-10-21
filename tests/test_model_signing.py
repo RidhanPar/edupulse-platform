@@ -12,6 +12,7 @@ from db import db
 from db.models import AuditEvent
 from utils import predict
 from utils.signing import MAGIC, ModelSignatureError, sign, verify
+from utils.model_cache import ModelCache
 from utils.storage import storage_for
 
 KEY, OLD_KEY = "current-signing-key", "previous-signing-key"
@@ -61,8 +62,10 @@ def test_the_app_refuses_a_replaced_model_file_and_audits_it(ready_tenant):
     buffer = io.BytesIO()
     joblib.dump({"planted": "by someone with bucket access"}, buffer)
     storage_for(alpha.organisation.id).put(alpha.artifact.storage_key, buffer.getvalue())
+    # A fresh worker: nothing verified earlier is still held in memory.
+    alpha.client.application.extensions["model_cache"] = ModelCache(4)
 
-    response = alpha.client.get("/results", follow_redirects=True)
+    response = alpha.client.post("/predict", follow_redirects=True)
 
     assert "model file is not signed" in response.get_data(as_text=True)
     [event] = db.session.scalars(select(AuditEvent).where(AuditEvent.action == "model_signature_rejected")).all()

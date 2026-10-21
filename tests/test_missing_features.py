@@ -85,8 +85,10 @@ def test_a_prediction_file_missing_a_trained_feature_is_refused(tenant, upload, 
     alpha.client.post("/train")
     upload(alpha.client, "/upload-predict", partial_csvs["prediction"])  # supplies only three
 
-    response = alpha.client.get("/results", follow_redirects=True)
+    page = alpha.client.get("/upload-predict").get_data(as_text=True)
 
-    page = response.get_data(as_text=True)
+    assert "Predictions could not be run" in page
     assert "missing columns this model was trained on" in page
     assert all(feature in page for feature in ABSENT)
+    # No results are produced from the incomplete file, and none are invented.
+    assert "No predictions yet" in alpha.client.get("/results").get_data(as_text=True)

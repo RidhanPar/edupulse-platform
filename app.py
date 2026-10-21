@@ -7,7 +7,7 @@ import uuid
 from datetime import datetime, timedelta, timezone
 
 import pandas as pd
-from flask import Flask, render_template, request, redirect, url_for, flash, Response, current_app
+from flask import Flask, render_template, request, redirect, url_for, flash, Response, abort, current_app
 from flask_login import current_user
 from sqlalchemy import select, text
 from werkzeug.exceptions import RequestEntityTooLarge
@@ -15,11 +15,11 @@ from werkzeug.exceptions import RequestEntityTooLarge
 from auth import check_route_roles, init_auth
 from auth.invites import issue_invite
 from auth.ratelimit import trust_proxy
-from auth.roles import require_role
+from auth.roles import require_role, user_has_role
 from config import build_config, resolve_env
 from db import db, migrate
 from db.audit import AUDIT_ACTIONS, AUDIT_PAGE_SIZE, AuditFilters, audit_page, decode_cursor, record_audit_event
-from db.models import ColumnMapping, Dataset, DatasetKind, ModelArtifact, Role, User
+from db.models import ColumnMapping, Dataset, DatasetKind, ModelArtifact, PredictionRun, Role, StudentPrediction, User
 from db.tenancy import scoped_get, scoped_get_or_404, scoped_select
 from utils.column_mapping import apply_mapping, guess_mapping, mapping_problems
 from utils.evaluation import load_importances, load_metrics, load_model_comparison
@@ -247,25 +247,154 @@ def _save_model(artifacts, training_dataset: Dataset) -> ModelArtifact:
     return artifact
 
 
-def _record_prediction_use(action: str, artifact: ModelArtifact, *, row_count: int, **details) -> None:
-    """Audit a use of the model's predictions over the organisation's student records.
+RISK_RANK = {"Low": 0, "Medium": 1, "High": 2}
+RUN_COLUMNS = [
+    "student_id", "student_name", "prediction", "fail_probability", "confidence",
+    "risk_level", "recommendation", "previous_risk_level", "risk_change",
+]
 
-    Viewing /results or /compare and exporting a CSV all process identifiable student
-    data, so each one is recorded with who, which model, which dataset and how many rows.
+
+def _latest_run() -> PredictionRun | None:
+    return db.session.scalars(
+        scoped_select(PredictionRun, current_organisation_id()).order_by(PredictionRun.created_at.desc()).limit(1)
+    ).first()
+
+
+def _as_number(value):
+    """A JSON-safe number for a feature value, or None where the file had no value."""
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    return None if number != number else number  # NaN is not equal to itself
+
+
+def _run_predictions(artifact: ModelArtifact, dataset: Dataset) -> PredictionRun:
+    """Apply the model to the dataset once and store every student's result.
+
+    Each row also records the student's risk in the previous run, so the results page
+    can show who has become more at risk without recomputing anything.
     """
-    prediction_dataset = _latest_dataset(DatasetKind.PREDICTION)
+    from utils.predict import predict_dataframe
+
+    organisation_id = current_organisation_id()
+    results = predict_dataframe(_read_dataset(dataset), _load_model(artifact), artifact.features)
+    previous = _latest_run()
+    previous_risk = {}
+    if previous is not None:
+        previous_risk = {
+            row.student_id: row.risk_level
+            for row in db.session.scalars(
+                scoped_select(StudentPrediction, organisation_id).where(StudentPrediction.run_id == previous.id)
+            )
+        }
+
+    run = PredictionRun(
+        id=uuid.uuid4(),
+        organisation_id=organisation_id,
+        model_artifact_id=artifact.id,
+        prediction_dataset_id=dataset.id,
+        previous_run_id=previous.id if previous else None,
+        created_by=current_user.id,
+        row_count=len(results),
+        retention_expires_at=dataset.retention_expires_at,
+    )
+    db.session.add(run)
+    db.session.add_all(
+        StudentPrediction(
+            organisation_id=organisation_id,
+            run_id=run.id,
+            student_id=str(record["student_id"])[:100],
+            student_name=str(record["student_name"])[:200],
+            prediction=record["prediction"],
+            fail_probability=float(record["fail_probability"]),
+            confidence=float(record["confidence"]),
+            risk_level=record["risk_level"],
+            recommendation=record["recommendation"],
+            features={feature: _as_number(record.get(feature)) for feature in artifact.features},
+            previous_risk_level=previous_risk.get(str(record["student_id"])[:100]),
+        )
+        for record in results.to_dict(orient="records")
+    )
     record_audit_event(
-        action,
+        "prediction_run",
         user=current_user,
-        entity_type="model_artifact",
-        entity_id=artifact.id,
+        entity_type="prediction_run",
+        entity_id=run.id,
         details={
-            **details,
-            "prediction_dataset_id": str(prediction_dataset.id) if prediction_dataset else None,
-            "row_count": int(row_count),
+            "model_artifact_id": str(artifact.id),
+            "prediction_dataset_id": str(dataset.id),
+            "row_count": run.row_count,
         },
     )
     db.session.commit()
+    return run
+
+
+def _refresh_predictions() -> None:
+    """Re-run predictions after the data or the model changes, so results are never stale."""
+    artifact = _active_model()
+    dataset = _latest_dataset(DatasetKind.PREDICTION)
+    if artifact is None or dataset is None or _missing_columns(dataset):
+        return
+    try:
+        run = _run_predictions(artifact, dataset)
+        flash(f"Predictions updated for {run.row_count} students.", "success")
+    except Exception as error:
+        db.session.rollback()
+        flash(f"Predictions could not be run: {error}", "warning")
+
+
+def _risk_change(previous: str | None, current: str, has_previous_run: bool) -> str:
+    if not has_previous_run:
+        return ""
+    if previous is None:
+        return "new"
+    difference = RISK_RANK.get(current, 0) - RISK_RANK.get(previous, 0)
+    return "up" if difference > 0 else "down" if difference < 0 else "same"
+
+
+def _run_frame(run: PredictionRun) -> pd.DataFrame:
+    rows = db.session.scalars(
+        scoped_select(StudentPrediction, current_organisation_id()).where(StudentPrediction.run_id == run.id)
+    ).all()
+    has_previous_run = run.previous_run_id is not None
+    return pd.DataFrame(
+        [
+            {
+                "student_id": row.student_id,
+                "student_name": row.student_name,
+                "prediction": row.prediction,
+                "fail_probability": row.fail_probability,
+                "confidence": row.confidence,
+                "risk_level": row.risk_level,
+                "recommendation": row.recommendation,
+                "previous_risk_level": row.previous_risk_level,
+                "risk_change": _risk_change(row.previous_risk_level, row.risk_level, has_previous_run),
+            }
+            for row in rows
+        ],
+        columns=RUN_COLUMNS,
+    )
+
+
+def _no_run_redirect():
+    """Where to send someone who asks for results before any exist, or None to show the page."""
+    if _active_model() is None:
+        flash("Train the model first.", "warning")
+        return redirect(url_for("train"))
+    if _latest_dataset(DatasetKind.PREDICTION) is None:
+        flash("No prediction dataset uploaded yet.", "danger")
+        return redirect(url_for("upload_predict"))
+    return None
+
+
+def _run_is_stale(run: PredictionRun) -> bool:
+    artifact = _active_model()
+    dataset = _latest_dataset(DatasetKind.PREDICTION)
+    return (artifact is not None and run.model_artifact_id != artifact.id) or (
+        dataset is not None and run.prediction_dataset_id != dataset.id
+    )
 
 
 def get_training_df(require_target: bool = True):
@@ -283,21 +412,6 @@ def get_training_df(require_target: bool = True):
     except Exception as e:
         return None, f"Error reading training dataset: {str(e)}"
 
-
-def get_prediction_df():
-    from utils.preprocessing import validate_columns
-
-    dataset = _latest_dataset(DatasetKind.PREDICTION)
-    if dataset is None:
-        return None, "No prediction dataset uploaded yet."
-    try:
-        df = _read_dataset(dataset)
-        ok, missing = validate_columns(df, require_target=False)
-        if not ok:
-            return None, f"Missing required columns in prediction dataset: {', '.join(missing)}"
-        return df, None
-    except Exception as e:
-        return None, f"Error reading prediction dataset: {str(e)}"
 
 def get_actual_results_df():
     dataset = _latest_dataset(DatasetKind.ACTUAL)
@@ -389,6 +503,7 @@ def upload_predict():
             if _needs_mapping(dataset):
                 return redirect(url_for("map_columns", dataset_id=dataset.id))
             flash("Prediction dataset uploaded successfully.", "success")
+            _refresh_predictions()
             return redirect(url_for("upload_predict"))
 
         except RequestEntityTooLarge:
@@ -434,6 +549,7 @@ def train():
             db.session.rollback()
             flash(f"Training failed: {str(e)}", "danger")
             return redirect(url_for("train"))
+        _refresh_predictions()
 
     return render_template(
         "train.html",
@@ -444,31 +560,18 @@ def train():
 
 
 def results():
-    from utils.predict import predict_dataframe
-
-    # TODO: predictions are recomputed on every request to /results, /download-results
-    # and /compare. The model itself is now cached per worker (see _load_model), but the
-    # predictions should be materialised into a table when the prediction dataset or
-    # active model changes; recomputing per request becomes a real cost once LLM
-    # reasoning is added.
-    artifact = _active_model()
-    if artifact is None:
-        flash("Train the model first.", "warning")
-        return redirect(url_for("train"))
-
-    df, err = get_prediction_df()
-    if err:
-        flash(err, "danger")
-        return redirect(url_for("upload_predict"))
-
-    try:
-        res = predict_dataframe(df, _load_model(artifact), artifact.features)
-    except Exception as e:
-        flash(f"Prediction failed: {str(e)}", "danger")
-        return redirect(url_for("upload_predict"))
+    # Reads the latest stored run: viewing results never loads the model or re-reads the
+    # uploaded file. Predictions are produced by _run_predictions when data or model change.
+    run = _latest_run()
+    if run is None:
+        redirect_to = _no_run_redirect()
+        if redirect_to is not None:
+            return redirect_to
+        return render_template("results.html", run=None, records=[], summary=None, filters=ResultFilters(),
+                               stale=False, can_run=user_has_role(current_user, Role.STAFF))
 
     filters = ResultFilters.from_args(request.args)
-    filtered = filters.apply(res)
+    filtered = filters.apply(_run_frame(run))
 
     summary = {
         "total": int(len(filtered)),
@@ -477,47 +580,81 @@ def results():
         "high_risk": int((filtered["risk_level"] == "High").sum()),
         "medium_risk": int((filtered["risk_level"] == "Medium").sum()),
         "low_risk": int((filtered["risk_level"] == "Low").sum()),
+        "risk_rose": int((filtered["risk_change"] == "up").sum()),
     }
 
     records = filtered.head(200).to_dict(orient="records")
-    _record_prediction_use(
-        "prediction_run",
-        artifact,
-        row_count=summary["total"],
-        page="results",
-        filters=filters.applied(),
+    record_audit_event(
+        "results_viewed",
+        user=current_user,
+        entity_type="prediction_run",
+        entity_id=run.id,
+        details={"page": "results", "row_count": summary["total"], "filters": filters.applied()},
     )
+    db.session.commit()
 
     return render_template(
         "results.html",
+        run=run,
         records=records,
         summary=summary,
-        name_query=filters.name,
-        risk_filter=filters.risk,
-        prediction_filter=filters.prediction
+        filters=filters,
+        stale=_run_is_stale(run),
+        can_run=user_has_role(current_user, Role.STAFF),
     )
 
-def download_results():
-    from utils.predict import predict_dataframe
 
+def run_predictions():
+    """Staff and owners re-run predictions on demand, for example after fixing a mapping."""
     artifact = _active_model()
+    dataset = _latest_dataset(DatasetKind.PREDICTION)
     if artifact is None:
         flash("Train the model first.", "warning")
         return redirect(url_for("train"))
-
-    df, err = get_prediction_df()
-    if err:
-        flash(err, "danger")
+    if dataset is None:
+        flash("No prediction dataset uploaded yet.", "danger")
         return redirect(url_for("upload_predict"))
-
     try:
-        res = predict_dataframe(df, _load_model(artifact), artifact.features)
+        run = _run_predictions(artifact, dataset)
+        flash(f"Predictions updated for {run.row_count} students.", "success")
     except Exception as e:
+        db.session.rollback()
         flash(f"Prediction failed: {str(e)}", "danger")
-        return redirect(url_for("upload_predict"))
+    return redirect(url_for("results"))
+
+
+def student(student_id):
+    """One student's latest result and how their risk has moved across runs. Audited:
+    this is the most detailed view of an individual the application offers."""
+    history = db.session.scalars(
+        scoped_select(StudentPrediction, current_organisation_id())
+        .join(PredictionRun, StudentPrediction.run_id == PredictionRun.id)
+        .where(StudentPrediction.student_id == student_id)
+        .order_by(PredictionRun.created_at.desc())
+    ).all()
+    if not history:
+        abort(404)
+    record_audit_event(
+        "student_viewed",
+        user=current_user,
+        entity_type="student",
+        entity_id=student_id[:64],
+        details={"runs_shown": len(history)},
+    )
+    db.session.commit()
+    return render_template("student.html", latest=history[0], history=history)
+
+def download_results():
+    run = _latest_run()
+    if run is None:
+        redirect_to = _no_run_redirect()
+        if redirect_to is not None:
+            return redirect_to
+        flash("Predictions have not been run yet.", "warning")
+        return redirect(url_for("results"))
 
     filters = ResultFilters.from_args(request.args)
-    filtered = filters.apply(res)
+    filtered = filters.apply(_run_frame(run))
 
     export_cols = [
         "student_id",
@@ -533,12 +670,14 @@ def download_results():
     csv_data = filtered[available_cols].to_csv(index=False)
     # An export is an uncontrolled copy of identifiable student data: record who took it,
     # how many rows and which filters produced it.
-    _record_prediction_use(
+    record_audit_event(
         "results_exported",
-        artifact,
-        row_count=len(filtered),
-        filters=filters.applied(),
+        user=current_user,
+        entity_type="prediction_run",
+        entity_id=run.id,
+        details={"row_count": int(len(filtered)), "filters": filters.applied()},
     )
+    db.session.commit()
 
     return Response(
         csv_data,
@@ -606,16 +745,10 @@ def upload_actual():
 
 def compare():
     from utils.compare_results import compare_predictions_with_actual
-    from utils.predict import predict_dataframe
 
-    artifact = _active_model()
-    if artifact is None:
-        flash("Train the model first.", "warning")
-        return render_template("compare.html", records=None, metrics=None)
-
-    pred_df, pred_err = get_prediction_df()
-    if pred_err:
-        flash(pred_err, "danger")
+    run = _latest_run()
+    if run is None:
+        flash("Train the model first." if _active_model() is None else "Predictions have not been run yet.", "warning")
         return render_template("compare.html", records=None, metrics=None)
 
     actual_df, actual_err = get_actual_results_df()
@@ -624,12 +757,18 @@ def compare():
         return render_template("compare.html", records=None, metrics=None)
 
     try:
-        predicted_results = predict_dataframe(pred_df, _load_model(artifact), artifact.features)
-        comparison_df, comparison_metrics = compare_predictions_with_actual(predicted_results, actual_df)
+        predicted = _run_frame(run)[["student_id", "student_name", "prediction", "fail_probability", "risk_level"]]
+        actual_df["student_id"] = actual_df["student_id"].astype(str)
+        comparison_df, comparison_metrics = compare_predictions_with_actual(predicted, actual_df)
         records = comparison_df.head(200).to_dict(orient="records")
-        _record_prediction_use(
-            "prediction_run", artifact, row_count=comparison_metrics["total_compared"], page="compare"
+        record_audit_event(
+            "results_viewed",
+            user=current_user,
+            entity_type="prediction_run",
+            entity_id=run.id,
+            details={"page": "compare", "row_count": comparison_metrics["total_compared"]},
         )
+        db.session.commit()
         return render_template(
             "compare.html",
             records=records,
@@ -696,6 +835,8 @@ def map_columns(dataset_id):
         else:
             _save_mapping(dataset.kind, chosen)
             flash("Column mapping saved. Future uploads of this file format will use it.", "success")
+            if dataset.kind is DatasetKind.PREDICTION:
+                _refresh_predictions()
             return redirect(url_for(UPLOAD_ENDPOINTS[dataset.kind]))
     else:
         stored = _stored_mapping(dataset.kind)
@@ -915,6 +1056,8 @@ def _register_routes(app: Flask) -> None:
     app.add_url_rule("/train", view_func=require_role(viewer, write=owner)(train), methods=["GET", "POST"])
     app.add_url_rule("/results", view_func=require_role(viewer)(results))
     app.add_url_rule("/download-results", view_func=require_role(staff)(download_results))
+    app.add_url_rule("/predict", view_func=require_role(staff)(run_predictions), methods=["POST"])
+    app.add_url_rule("/students/<path:student_id>", view_func=require_role(viewer)(student))
     app.add_url_rule("/explain", view_func=require_role(viewer)(explain))
     app.add_url_rule("/about", view_func=require_role(viewer)(about))
     app.add_url_rule("/audit", view_func=require_role(owner)(audit_log))

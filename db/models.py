@@ -16,11 +16,13 @@ from sqlalchemy import (
     Boolean,
     DateTime,
     Enum,
+    Float,
     ForeignKey,
     Index,
     Integer,
     LargeBinary,
     String,
+    Text,
     UniqueConstraint,
     Uuid,
     event,
@@ -230,6 +232,59 @@ class AuditEvent(db.Model):
     # Structured context, e.g. the row count and applied filters of an export.
     details: Mapped[dict | None] = mapped_column(JSON)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class PredictionRun(db.Model):
+    """One application of a model to a prediction dataset, stored as it was produced.
+
+    Pages read stored results instead of recomputing them on every view, and each
+    student's risk can be followed from one run to the next.
+    """
+
+    __tablename__ = "prediction_runs"
+    __table_args__ = (Index("ix_prediction_runs_org_created", "organisation_id", "created_at"),)
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    organisation_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("organisations.id"))
+    model_artifact_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("model_artifacts.id"))
+    prediction_dataset_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("datasets.id"))
+    # The run this one is compared against, for "what changed"; null for the first run.
+    previous_run_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("prediction_runs.id"))
+    created_by: Mapped[uuid.UUID] = mapped_column(_user_fk())
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    row_count: Mapped[int] = mapped_column(Integer)
+    # Identifiable predictions are kept no longer than the dataset they were made from.
+    retention_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+    model_artifact: Mapped[ModelArtifact] = relationship()
+    prediction_dataset: Mapped[Dataset] = relationship()
+
+
+class StudentPrediction(db.Model):
+    """One student's result within a PredictionRun. Personal data: see PredictionRun retention."""
+
+    __tablename__ = "student_predictions"
+    __table_args__ = (
+        Index("ix_student_predictions_org_student", "organisation_id", "student_id"),
+        Index("ix_student_predictions_run_id", "run_id"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    organisation_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("organisations.id"))
+    run_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("prediction_runs.id"))
+    student_id: Mapped[str] = mapped_column(String(100))
+    student_name: Mapped[str] = mapped_column(String(200))
+    prediction: Mapped[str] = mapped_column(String(16))
+    fail_probability: Mapped[float] = mapped_column(Float)
+    confidence: Mapped[float] = mapped_column(Float)
+    risk_level: Mapped[str] = mapped_column(String(16))
+    recommendation: Mapped[str] = mapped_column(Text)
+    # The model's input values for this student as used, null where the file had no value.
+    features: Mapped[dict] = mapped_column(JSON)
+    # This student's risk in the previous run, null if they were not in it.
+    previous_risk_level: Mapped[str | None] = mapped_column(String(16))
+
+    run: Mapped[PredictionRun] = relationship()
 
 
 class ColumnMapping(db.Model):

@@ -476,6 +476,25 @@ input[type="date"] {
   white-space: nowrap;
 }
 
+.student-link {
+  color: var(--primary);
+  font-weight: 600;
+}
+
+.student-link:hover {
+  text-decoration: underline;
+}
+
+.risk-change-up {
+  color: var(--danger-text);
+  font-weight: 700;
+}
+
+.risk-change-down {
+  color: var(--success-text);
+  font-weight: 600;
+}
+
 .inline-form {
   display: inline-flex;
   gap: 6px;

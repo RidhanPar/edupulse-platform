@@ -23,6 +23,8 @@ ROLE_MAP = [
     ("GET", "/upload-actual", Role.STAFF),
     ("POST", "/upload-actual", Role.STAFF),
     ("GET", "/download-results", Role.STAFF),
+    ("POST", "/predict", Role.STAFF),
+    ("GET", "/students/MAT384", Role.VIEWER),
     ("POST", "/train", Role.OWNER),
     ("GET", "/audit", Role.OWNER),
     ("GET", "/users", Role.OWNER),

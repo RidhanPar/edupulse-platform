@@ -37,6 +37,8 @@ AUDIT_ACTIONS = (
     "dataset_uploaded",
     "model_trained",
     "prediction_run",
+    "results_viewed",
+    "student_viewed",
     "results_exported",
     "column_mapping_saved",
     "user_invited",

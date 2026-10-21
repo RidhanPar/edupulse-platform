@@ -178,6 +178,9 @@ EXPECTED_ROUTES = {
     ("/users/<user_id>/role", "change_user_role", frozenset({"POST"})),
     ("/users/<user_id>/status", "set_user_status", frozenset({"POST"})),
     ("/users/<user_id>/invite", "reissue_user_invite", frozenset({"POST"})),
+    # Added with stored prediction runs:
+    ("/predict", "run_predictions", frozenset({"POST"})),
+    ("/students/<path:student_id>", "student", frozenset({"GET"})),
 }
 
 

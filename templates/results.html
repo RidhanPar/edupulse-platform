@@ -3,29 +3,67 @@
 <div class="page-header">
   <div>
     <h1>Prediction Results</h1>
+    {% if run %}
     <p class="small">
-  These results were generated using the previously trained and saved best model on a newly uploaded prediction dataset.
-</p>
+      Predictions from {{ run.created_at.strftime('%Y-%m-%d %H:%M') }} UTC, made by the
+      {{ run.model_artifact.algorithm_name }} model on <strong>{{ run.prediction_dataset.original_filename }}</strong>
+      ({{ run.row_count }} students).
+      {% if run.previous_run_id %}Changes are measured against the run before it.{% else %}This is the first run, so there is nothing to compare changes against yet.{% endif %}
+    </p>
+    {% endif %}
   </div>
 </div>
 
+{% if stale %}
+<div class="flash flash-warning">
+  The model or the prediction data has changed since these predictions were made.
+  {% if can_run %}Run them again to bring them up to date.{% else %}Ask a staff member to run them again.{% endif %}
+</div>
+{% endif %}
+
+{% if can_run %}
+<form method="post" action="{{ url_for('run_predictions') }}" class="inline-form" style="margin-bottom:12px;">
+  <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+  <button class="btn btn-secondary" type="submit">{{ 'Run Predictions Again' if run else 'Run Predictions' }}</button>
+</form>
+{% endif %}
+
+{% if not run %}
+<div class="card">
+  <h3>No predictions yet</h3>
+  <p class="small">
+    {% if can_run %}A model and a prediction dataset are ready. Run predictions to see each student's risk.
+    {% else %}Predictions have not been run on the latest data yet. Ask a staff member to run them.{% endif %}
+  </p>
+</div>
+{% else %}
 
 <div class="card" style="margin-bottom:18px;">
   <form method="get" class="filter-form">
-    <input type="text" name="name" placeholder="Search by student name or ID" value="{{ name_query or '' }}">
+    <input type="text" name="name" placeholder="Search by student name or ID" value="{{ filters.name }}">
 
     <select name="risk">
       <option value="">All risk levels</option>
-      <option value="Low" {% if risk_filter == "Low" %}selected{% endif %}>Low</option>
-      <option value="Medium" {% if risk_filter == "Medium" %}selected{% endif %}>Medium</option>
-      <option value="High" {% if risk_filter == "High" %}selected{% endif %}>High</option>
+      {% for level in ['Low', 'Medium', 'High'] %}
+      <option value="{{ level }}" {% if filters.risk == level %}selected{% endif %}>{{ level }}</option>
+      {% endfor %}
     </select>
 
     <select name="prediction">
       <option value="">All predictions</option>
-      <option value="Pass" {% if prediction_filter == "Pass" %}selected{% endif %}>Pass</option>
-      <option value="Fail" {% if prediction_filter == "Fail" %}selected{% endif %}>Fail</option>
+      <option value="Pass" {% if filters.prediction == "Pass" %}selected{% endif %}>Pass</option>
+      <option value="Fail" {% if filters.prediction == "Fail" %}selected{% endif %}>Fail</option>
     </select>
+
+    {% if run.previous_run_id %}
+    <select name="change">
+      <option value="">Any change since last run</option>
+      <option value="up" {% if filters.change == "up" %}selected{% endif %}>Risk rose</option>
+      <option value="down" {% if filters.change == "down" %}selected{% endif %}>Risk fell</option>
+      <option value="same" {% if filters.change == "same" %}selected{% endif %}>No change</option>
+      <option value="new" {% if filters.change == "new" %}selected{% endif %}>New this run</option>
+    </select>
+    {% endif %}
 
     <button class="btn" type="submit">Apply Filters</button>
     <a class="btn btn-secondary" href="{{ url_for('results') }}">Reset</a>
@@ -35,7 +73,7 @@
 {% if user_has_role('staff') %}
 <div class="hero-actions" style="margin-top:12px;">
   <a class="btn"
-     href="{{ url_for('download_results', name=name_query, risk=risk_filter, prediction=prediction_filter) }}">
+     href="{{ url_for('download_results', name=filters.name, risk=filters.risk, prediction=filters.prediction, change=filters.change) }}">
     Download Results CSV
   </a>
 </div>
@@ -57,6 +95,9 @@
   <div class="card stat-card"><span>Low risk</span><strong>{{ summary.low_risk }}</strong></div>
   <div class="card stat-card"><span>Medium risk</span><strong>{{ summary.medium_risk }}</strong></div>
   <div class="card stat-card"><span>High risk</span><strong>{{ summary.high_risk }}</strong></div>
+  {% if run.previous_run_id %}
+  <div class="card stat-card"><span>Risk rose since last run</span><strong>{{ summary.risk_rose }}</strong></div>
+  {% endif %}
 </div>
 
 <div class="table-card">
@@ -70,6 +111,7 @@
           <th>Fail Probability</th>
           <th>Confidence</th>
           <th>Risk Level</th>
+          {% if run.previous_run_id %}<th>Since Last Run</th>{% endif %}
           <th>Recommendation</th>
         </tr>
       </thead>
@@ -77,11 +119,19 @@
       {% for row in records %}
         <tr>
           <td>{{ row.student_id }}</td>
-          <td>{{ row.student_name }}</td>
+          <td><a class="student-link" href="{{ url_for('student', student_id=row.student_id) }}">{{ row.student_name }}</a></td>
           <td>{{ row.prediction }}</td>
           <td>{{ row.fail_probability }}</td>
           <td>{{ row.confidence }}</td>
           <td><span class="badge badge-{{ row.risk_level|lower }}">{{ row.risk_level }}</span></td>
+          {% if run.previous_run_id %}
+          <td class="risk-change risk-change-{{ row.risk_change }}">
+            {% if row.risk_change == 'up' %}Rose from {{ row.previous_risk_level }}
+            {% elif row.risk_change == 'down' %}Fell from {{ row.previous_risk_level }}
+            {% elif row.risk_change == 'new' %}New
+            {% else %}No change{% endif %}
+          </td>
+          {% endif %}
           <td>{{ row.recommendation }}</td>
         </tr>
       {% endfor %}
@@ -96,4 +146,5 @@
     <a class="btn" href="{{ url_for('compare') }}">Compare with Actual Results</a>
   </div>
 </div>
+{% endif %}
 {% endblock %}

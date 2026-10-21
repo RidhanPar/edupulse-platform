@@ -1,0 +1,60 @@
+{% extends 'base.html' %}
+{% block title %}EduPulse | {{ latest.student_name }}{% endblock %}
+{% block content %}
+<div class="page-header">
+  <div>
+    <h1>{{ latest.student_name }}</h1>
+    <p class="small">Student ID {{ latest.student_id }}. This view is recorded in the audit log.</p>
+  </div>
+</div>
+
+<div class="card-grid">
+  <div class="card stat-card"><span>Latest risk</span><strong><span class="badge badge-{{ latest.risk_level|lower }}">{{ latest.risk_level }}</span></strong></div>
+  <div class="card stat-card"><span>Predicted outcome</span><strong>{{ latest.prediction }}</strong></div>
+  <div class="card stat-card"><span>Fail probability</span><strong>{{ latest.fail_probability }}</strong></div>
+</div>
+
+<div class="card">
+  <h3>Suggested Support</h3>
+  <p>{{ latest.recommendation }}</p>
+  <p class="small">A rule-based suggestion from the indicators below. It supports a conversation with the student and does not replace one.</p>
+</div>
+
+<div class="table-card">
+  <h2>Indicators Used ({{ latest.run.created_at.strftime('%Y-%m-%d') }})</h2>
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>Indicator</th><th>Value</th></tr></thead>
+      <tbody>
+        {% for feature, value in latest.features.items() %}
+        <tr><td>{{ feature }}</td><td>{{ value if value is not none else 'Not in the file' }}</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<div class="table-card">
+  <h2>Risk Over Time</h2>
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>Run (UTC)</th><th>Model</th><th>Prediction</th><th>Fail Probability</th><th>Risk</th></tr></thead>
+      <tbody>
+        {% for row in history %}
+        <tr class="history-row">
+          <td>{{ row.run.created_at.strftime('%Y-%m-%d %H:%M') }}</td>
+          <td>{{ row.run.model_artifact.algorithm_name }}</td>
+          <td>{{ row.prediction }}</td>
+          <td>{{ row.fail_probability }}</td>
+          <td><span class="badge badge-{{ row.risk_level|lower }}">{{ row.risk_level }}</span></td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<div class="hero-actions">
+  <a class="btn btn-secondary" href="{{ url_for('results') }}">Back to Results</a>
+</div>
+{% endblock %}

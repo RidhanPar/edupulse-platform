@@ -153,6 +153,9 @@ def ready_tenant(tenant, upload, csv_fixtures, trained):
         signing_key = ready.client.application.config["MODEL_SIGNING_KEYS"][0]
         storage_for(ready.organisation.id).put(artifact.storage_key, serialize_model(trained.model, signing_key))
         db.session.add(artifact)
+        db.session.commit()
+        # Produce the stored results the results, export and comparison pages read.
+        assert ready.client.post("/predict").status_code == 302
         ready.user.role = role
         db.session.commit()
         ready.artifact = artifact
