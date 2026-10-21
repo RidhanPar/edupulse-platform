@@ -22,6 +22,7 @@ from db.audit import AUDIT_ACTIONS, AUDIT_PAGE_SIZE, AuditFilters, audit_page, d
 from db.models import ColumnMapping, Dataset, DatasetKind, ModelArtifact, PredictionRun, Role, StudentPrediction, User
 from db.tenancy import scoped_get, scoped_get_or_404, scoped_select
 from utils.column_mapping import apply_mapping, guess_mapping, mapping_problems
+from utils.data_dictionary import DATA_DICTIONARY, EXAMPLE_ROWS
 from utils.evaluation import load_importances, load_metrics, load_model_comparison
 from utils.filters import ResultFilters
 from utils.model_cache import ModelCache
@@ -448,8 +449,6 @@ def home():
 
 
 def upload_train():
-    from utils.preprocessing import DISPLAY_COLUMNS, FEATURE_COLUMNS, TARGET_COLUMN
-
     if request.method == "POST":
         try:
             file = request.files.get("file")
@@ -476,18 +475,15 @@ def upload_train():
 
     preview, columns = _preview(DatasetKind.TRAINING, "training")
 
-    required = DISPLAY_COLUMNS + FEATURE_COLUMNS + [TARGET_COLUMN]
     return render_template(
         "upload_train.html",
         preview=preview,
         columns=columns,
-        required=required
+        **_column_guide(DatasetKind.TRAINING)
     )
 
 
 def upload_predict():
-    from utils.preprocessing import DISPLAY_COLUMNS, FEATURE_COLUMNS
-
     if request.method == "POST":
         try:
             file = request.files.get("file")
@@ -515,12 +511,11 @@ def upload_predict():
 
     preview, columns = _preview(DatasetKind.PREDICTION, "prediction")
 
-    required = DISPLAY_COLUMNS + FEATURE_COLUMNS
     return render_template(
         "upload_predict.html",
         preview=preview,
         columns=columns,
-        required=required
+        **_column_guide(DatasetKind.PREDICTION)
     )
 
 
@@ -735,12 +730,11 @@ def upload_actual():
 
     preview, columns = _preview(DatasetKind.ACTUAL, "actual results")
 
-    required = ["student_id", "target"]
     return render_template(
         "upload_actual.html",
         preview=preview,
         columns=columns,
-        required=required
+        **_column_guide(DatasetKind.ACTUAL)
     )
 
 def compare():
@@ -781,6 +775,26 @@ def compare():
 def recheck_comparison():
     flash("Comparison metrics refreshed using the current prediction and actual results files.", "success")
     return redirect(url_for("compare"))
+
+def _column_guide(kind: DatasetKind) -> dict:
+    expected, required = _expected_columns(kind)
+    return {"template_kind": kind.value, "guide_columns": expected, "must_have": required,
+            "dictionary": DATA_DICTIONARY}
+
+
+def download_template(kind):
+    """A CSV with the expected columns and two invented example students."""
+    try:
+        dataset_kind = DatasetKind(kind)
+    except ValueError:
+        abort(404)
+    expected, _ = _expected_columns(dataset_kind)
+    return Response(
+        pd.DataFrame(EXAMPLE_ROWS)[expected].to_csv(index=False),
+        mimetype="text/csv",
+        headers={"Content-Disposition": f"attachment; filename=edupulse-{dataset_kind.value}-template.csv"},
+    )
+
 
 UPLOAD_ENDPOINTS = {
     DatasetKind.TRAINING: "upload_train",
@@ -853,6 +867,7 @@ def map_columns(dataset_id):
         required=required,
         features=features,
         selected=selected,
+        dictionary=DATA_DICTIONARY,
     )
 
 
@@ -1057,6 +1072,7 @@ def _register_routes(app: Flask) -> None:
     app.add_url_rule("/results", view_func=require_role(viewer)(results))
     app.add_url_rule("/download-results", view_func=require_role(staff)(download_results))
     app.add_url_rule("/predict", view_func=require_role(staff)(run_predictions), methods=["POST"])
+    app.add_url_rule("/templates/<kind>.csv", view_func=require_role(staff)(download_template))
     app.add_url_rule("/students/<path:student_id>", view_func=require_role(viewer)(student))
     app.add_url_rule("/explain", view_func=require_role(viewer)(explain))
     app.add_url_rule("/about", view_func=require_role(viewer)(about))

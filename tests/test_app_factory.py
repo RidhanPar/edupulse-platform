@@ -180,7 +180,7 @@ EXPECTED_ROUTES = {
     ("/users/<user_id>/invite", "reissue_user_invite", frozenset({"POST"})),
     # Added with stored prediction runs:
     ("/predict", "run_predictions", frozenset({"POST"})),
-    ("/students/<path:student_id>", "student", frozenset({"GET"})),
+    ("/students/<path:student_id>", "student", frozenset({"GET"})),    ("/templates/<kind>.csv", "download_template", frozenset({"GET"})),
 }
 
 

@@ -23,7 +23,7 @@
         <tbody>
           {% for field in expected %}
           <tr>
-            <td><strong>{{ field }}</strong></td>
+            <td><strong>{{ field }}</strong><div class="small">{{ dictionary[field] }}</div></td>
             <td>
               <select name="{{ field }}">
                 <option value="">— not in this file —</option>

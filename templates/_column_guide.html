@@ -1,0 +1,23 @@
+<p>
+  <strong>Your file:</strong> use these column names, or upload your own export as it is and match its
+  columns on the next screen.
+  <a class="student-link" href="{{ url_for('download_template', kind=template_kind) }}">Download a template CSV</a>
+</p>
+<details class="column-guide">
+  <summary>What each column means</summary>
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>Column</th><th>Needed</th><th>Meaning</th></tr></thead>
+      <tbody>
+        {% for column in guide_columns %}
+        <tr>
+          <td><strong>{{ column }}</strong></td>
+          <td class="small">{% if column in must_have %}Required{% else %}Optional (at least one indicator){% endif %}</td>
+          <td class="small">{{ dictionary[column] }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  <p class="small">Indicators you leave out are not used. The model is trained on the ones you supply, and the Explain page lists them.</p>
+</details>
