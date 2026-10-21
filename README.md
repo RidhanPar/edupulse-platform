@@ -7,11 +7,14 @@ Live demo: https://edupulse-platform.onrender.com/
 ## What It Implements
 
 - CSV validation and upload flows for training, prediction, and actual-result datasets
-- Reproducible comparison of Logistic Regression, Decision Tree, Random Forest, and SVM classifiers
+- Column mapping for an institution's own export format, saved for later uploads, plus CSV templates and a data dictionary
+- Reproducible comparison of Logistic Regression, Decision Tree, Random Forest, and SVM classifiers, trained on whichever indicators a file supplies
 - Persisted best-model artifact and evaluation metrics
-- Student-level risk bands and deterministic support recommendations
+- Stored prediction runs: student-level risk bands, deterministic support recommendations, and which students' risk rose since the last run
+- A page per student showing their indicators and risk over time
 - Prediction-versus-actual comparison
-- Render deployment blueprint, tests, and GitHub Actions CI
+- Organisations, invite-only accounts, roles, user management and an audit log
+- Render deployment blueprint, tests (including PostgreSQL), and GitHub Actions CI
 
 ## Evidence Boundary
 
@@ -25,11 +28,14 @@ Recommendations are deterministic rules based on input indicators and model risk
 
 ```mermaid
 flowchart LR
-    A[Synthetic training CSV] --> B[Validate and preprocess]
+    A[Training CSV] --> M[Column mapping]
+    E[Prediction CSV] --> M
+    M --> B[Validate and preprocess]
     B --> C[Compare classifiers]
-    C --> D[Persist selected model and metrics]
-    E[Prediction CSV] --> F[Risk scores and support recommendations]
-    D --> F
+    C --> D[Signed model and metrics]
+    D --> F[Prediction run stored per student]
+    M --> F
+    F --> R[Results, changes since last run, student pages]
     G[Actual outcomes CSV] --> H[Prediction comparison]
     F --> H
 ```
@@ -81,6 +87,12 @@ python app.py
 See [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md): Render (web service and PostgreSQL) and S3, all in Frankfurt, with the steps that need an account or a decision marked.
 
 The app trusts one proxy's `X-Forwarded-For` header, as on Render. When running with nothing in front of it, set `PROXY_HOPS=0` so clients cannot spoof their address.
+
+## Documents
+
+- [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md): production runbook
+- [docs/PRODUCT_STRATEGY.md](docs/PRODUCT_STRATEGY.md): who it is for, what blocks the first paying customer, and the roadmap
+- [docs/ISSUES_AND_FIXES.md](docs/ISSUES_AND_FIXES.md): problems hit while building it, how they were diagnosed and fixed
 
 ## Verify
 
