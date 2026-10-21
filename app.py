@@ -181,8 +181,29 @@ def _load_model(artifact: ModelArtifact):
     organisation_id = current_organisation_id()
     return current_app.extensions["model_cache"].get_or_load(
         (organisation_id, artifact.id),
-        lambda: load_model(storage_for(organisation_id).get(artifact.storage_key)),
+        lambda: _verified_model(organisation_id, artifact, load_model),
     )
+
+
+def _verified_model(organisation_id, artifact: ModelArtifact, load_model):
+    from utils.signing import ModelSignatureError
+
+    data = storage_for(organisation_id).get(artifact.storage_key)
+    try:
+        return load_model(data, current_app.config["MODEL_SIGNING_KEYS"])
+    except ModelSignatureError as error:
+        # Either the key changed without MODEL_SIGNING_KEY_PREVIOUS being set, or the stored
+        # file was altered. Both deserve an owner's attention, so it goes in the audit log.
+        current_app.logger.error("Refused to load model %s: %s", artifact.id, error)
+        record_audit_event(
+            "model_signature_rejected",
+            user=current_user,
+            entity_type="model_artifact",
+            entity_id=artifact.id,
+            details={"reason": str(error)},
+        )
+        db.session.commit()
+        raise
 
 
 def _save_model(artifacts, training_dataset: Dataset) -> ModelArtifact:
@@ -202,7 +223,9 @@ def _save_model(artifacts, training_dataset: Dataset) -> ModelArtifact:
         trained_by=current_user.id,
         is_active=True,
     )
-    storage_for(organisation_id).put(artifact.storage_key, serialize_model(artifacts.model))
+    storage_for(organisation_id).put(
+        artifact.storage_key, serialize_model(artifacts.model, current_app.config["MODEL_SIGNING_KEYS"][0])
+    )
     previous = _active_model()
     if previous is not None:
         # Deactivate first: the database allows one active model per organisation.
@@ -917,6 +940,9 @@ def create_app(config: dict | None = None, env: str | None = None) -> Flask:
     if config:
         app.config.update(config)
 
+    # Flask's own log handler writes to stderr, which Render collects. Without a level it
+    # inherits WARNING and the operational lines below would never appear.
+    app.logger.setLevel(app.config["LOG_LEVEL"])
     # First, so every later component (sessions, rate limits, audit IPs) sees the real
     # client address rather than the load balancer's.
     trust_proxy(app)

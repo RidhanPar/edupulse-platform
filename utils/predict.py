@@ -5,23 +5,18 @@ import io
 import joblib
 import pandas as pd
 
-from utils.preprocessing import FEATURE_COLUMNS, DISPLAY_COLUMNS, risk_from_probability, recommendation_from_row
+from utils.preprocessing import DISPLAY_COLUMNS, risk_from_probability, recommendation_from_row
+from utils.signing import verify
 
 
-def load_model(data: bytes):
+def load_model(data: bytes, signing_keys: list[str]):
     """Reverse utils.train_model.serialize_model.
 
-    joblib.load unpickles, which can execute code: only pass bytes this application
-    wrote to its own storage, fetched through TenantStorage.
-
-    TODO(section 7): sign serialised models and verify before unpickling, so write
-    access to the bucket alone cannot run code in the app. Use a separate
-    MODEL_SIGNING_KEY environment variable, required in production. Do not derive it
-    from FLASK_SECRET_KEY: rotating that secret would make every stored model
-    unloadable. Verification fails closed: an unsigned or badly signed model raises
-    and is never loaded.
+    joblib.load unpickles, which can execute code, so the signature is verified first
+    and an unsigned or badly signed file raises ModelSignatureError without ever being
+    unpickled. Write access to the bucket alone therefore cannot run code in the app.
     """
-    return joblib.load(io.BytesIO(data))
+    return joblib.load(io.BytesIO(verify(data, signing_keys)))
 
 
 def predict_dataframe(df: pd.DataFrame, model, features: list[str]) -> pd.DataFrame:

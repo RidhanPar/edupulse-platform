@@ -7,7 +7,7 @@ on the platform would lock every user out of the login page.
 """
 from __future__ import annotations
 
-from flask import Flask, render_template
+from flask import Flask, render_template, request
 from flask_limiter import Limiter
 from flask_limiter.util import get_remote_address
 from werkzeug.middleware.proxy_fix import ProxyFix
@@ -32,6 +32,34 @@ def trust_proxy(app: Flask) -> None:
     hops = app.config["PROXY_HOPS"]
     if hops:
         app.wsgi_app = ProxyFix(app.wsgi_app, x_for=hops, x_proto=hops)
+    app.logger.info("Trusting %d proxy hop(s) for X-Forwarded-For and X-Forwarded-Proto (PROXY_HOPS)", hops)
+    _log_first_forwarded_header(app)
+
+
+def _log_first_forwarded_header(app: Flask) -> None:
+    """Log the raw X-Forwarded-For of the first real request this process serves.
+
+    The hop count must come from what production actually sends, not a guess. A browser
+    sends no X-Forwarded-For of its own, so on a normal request the number of entries
+    equals the number of proxies in front of the app: set PROXY_HOPS to that number.
+    Health checks are skipped because the platform's checker may not route like a user.
+    """
+    logged = False
+
+    @app.before_request
+    def _log_once():
+        nonlocal logged
+        if logged or request.endpoint in ("healthz", "static"):
+            return
+        logged = True
+        raw = request.headers.get("X-Forwarded-For", "")
+        entries = [entry.strip() for entry in raw.split(",") if entry.strip()]
+        original_peer = request.environ.get("werkzeug.proxy_fix.orig", {}).get("REMOTE_ADDR", request.remote_addr)
+        app.logger.info(
+            "First request: X-Forwarded-For=%r has %d entr%s, connecting peer=%s, PROXY_HOPS=%d. "
+            "If this was an ordinary browser request, PROXY_HOPS should equal the number of entries.",
+            raw, len(entries), "y" if len(entries) == 1 else "ies", original_peer, app.config["PROXY_HOPS"],
+        )
 
 
 def _failed_attempt(response) -> bool:

@@ -1,13 +1,70 @@
+# Render blueprint for multi-tenant EduPulse. Read docs/DEPLOYMENT.md before applying:
+# it creates PAID resources (a starter web service and a basic PostgreSQL database).
+#
+# Both live in Frankfurt so student data stays in the EU, which UK and EU institutions
+# will ask about. A region cannot be changed after creation, so this blueprint creates a
+# new service rather than converting the existing free one; retire that after cutover.
+
+databases:
+  - name: edupulse-db
+    # Check the current plan names in the Render dashboard before applying.
+    plan: basic-256mb
+    region: frankfurt
+    databaseName: edupulse
+    user: edupulse
+    postgresMajorVersion: "16"
+    ipAllowList: []  # reachable only from Render services in this account, not the internet
+
 services:
   - type: web
-    name: edupredict
-    env: python
+    name: edupulse-platform
+    runtime: python
+    plan: starter
+    region: frankfurt
     buildCommand: pip install -r requirements.txt
+    # Runs before each deploy goes live. A failed migration stops the deploy and the
+    # previous version keeps serving.
+    preDeployCommand: flask --app wsgi db upgrade
     # Exactly one worker: the login rate limiter keeps its counters in process memory
     # (RATELIMIT_STORAGE_URI=memory://), so each extra worker or instance would multiply
     # the allowed attempts. Move the limiter to Redis before adding workers or instances.
-    startCommand: gunicorn --workers 1 wsgi:app
-    plan: free
+    # The timeout covers training, which runs inside the request until it moves to a
+    # background job.
+    startCommand: gunicorn --workers 1 --timeout 120 wsgi:app
+    healthCheckPath: /healthz
     envVars:
+      - key: PYTHON_VERSION
+        value: "3.11.9"
+      - key: FLASK_ENV
+        value: production
+      - key: DATABASE_URL
+        fromDatabase:
+          name: edupulse-db
+          property: connectionString
+      # Generated once by Render and kept. Never derive one from the other: rotating the
+      # session secret must not invalidate stored models.
       - key: FLASK_SECRET_KEY
         generateValue: true
+      - key: MODEL_SIGNING_KEY
+        generateValue: true
+      - key: STORAGE_BACKEND
+        value: s3
+      # Set these in the dashboard from the bucket and access key created in
+      # docs/DEPLOYMENT.md. sync: false keeps them out of this file.
+      - key: STORAGE_ENDPOINT
+        sync: false
+      - key: STORAGE_REGION
+        sync: false
+      - key: STORAGE_BUCKET
+        sync: false
+      - key: STORAGE_ACCESS_KEY
+        sync: false
+      - key: STORAGE_SECRET_KEY
+        sync: false
+      # Start at 1 (Render's own proxy), then confirm from the "First request" log line
+      # and change it if the observed entry count differs. See docs/DEPLOYMENT.md.
+      - key: PROXY_HOPS
+        value: "1"
+      # Public URL, used to build the invite links printed by flask create-org.
+      - key: APP_BASE_URL
+        sync: false

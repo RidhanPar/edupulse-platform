@@ -6,10 +6,10 @@ ORM flushes, bulk ORM statements, Core statements and text() SQL are all covered
 The only write it lets through to an existing row is the redaction performed by
 redact_expired_audit_personal_data.
 
-TODO(section 7): add a PostgreSQL trigger refusing UPDATE and DELETE on
-audit_events, for writes that do not come through this application (psql, other
-services). It must still allow the redaction update below. SQLite has no
-equivalent, so it lands with the rest of the Postgres-specific migration work.
+On PostgreSQL a trigger enforces the same rule for writes that do not come through
+this application (psql, other services): migration e1a7c0b94d25. It allows only an
+UPDATE that nulls ip_address and user_agent and changes nothing else, which is
+exactly what the redaction below does. SQLite relies on this module alone.
 """
 from __future__ import annotations
 
@@ -44,6 +44,7 @@ AUDIT_ACTIONS = (
     "user_deactivated",
     "user_reactivated",
     "invite_reissued",
+    "model_signature_rejected",
 )
 
 # Fixed server-side page size. The table only grows, so no caller may ask for more.

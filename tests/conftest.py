@@ -150,7 +150,8 @@ def ready_tenant(tenant, upload, csv_fixtures, trained):
             trained_by=ready.user.id,
             is_active=True,
         )
-        storage_for(ready.organisation.id).put(artifact.storage_key, serialize_model(trained.model))
+        signing_key = ready.client.application.config["MODEL_SIGNING_KEYS"][0]
+        storage_for(ready.organisation.id).put(artifact.storage_key, serialize_model(trained.model, signing_key))
         db.session.add(artifact)
         ready.user.role = role
         db.session.commit()

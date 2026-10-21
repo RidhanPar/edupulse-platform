@@ -197,6 +197,8 @@ def test_s3_backend_round_trip(s3_backend):
     s3_backend.write(key, b"student_id,target\n")
 
     assert s3_backend.read(key) == b"student_id,target\n"
+    head = s3_backend._client.head_object(Bucket=s3_backend.bucket, Key=key)
+    assert head["ServerSideEncryption"] == "AES256"  # encrypted at rest, requested explicitly
 
 
 def test_s3_backend_reports_missing_objects(s3_backend):

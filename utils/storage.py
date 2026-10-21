@@ -84,19 +84,22 @@ class LocalStorage:
 class S3Storage:
     """S3-compatible backend (AWS S3, Cloudflare R2, MinIO and similar)."""
 
-    def __init__(self, endpoint_url: str, bucket: str, access_key: str, secret_key: str) -> None:
+    def __init__(self, endpoint_url: str, bucket: str, access_key: str, secret_key: str, region: str | None = None) -> None:
         import boto3  # only production needs it, so keep it off every local cold start
 
         self._client = boto3.client(
             "s3",
             endpoint_url=endpoint_url,
+            region_name=region or None,
             aws_access_key_id=access_key,
             aws_secret_access_key=secret_key,
         )
         self.bucket = bucket
 
     def write(self, key: str, data: bytes) -> None:
-        self._client.put_object(Bucket=self.bucket, Key=key, Body=data)
+        # Ask for encryption at rest explicitly rather than relying on the bucket default,
+        # so an object can never be written unencrypted to a misconfigured bucket.
+        self._client.put_object(Bucket=self.bucket, Key=key, Body=data, ServerSideEncryption="AES256")
 
     def read(self, key: str) -> bytes:
         from botocore.exceptions import ClientError
@@ -161,6 +164,7 @@ def build_backend(config) -> LocalStorage | S3Storage:
             bucket=config["STORAGE_BUCKET"],
             access_key=config["STORAGE_ACCESS_KEY"],
             secret_key=config["STORAGE_SECRET_KEY"],
+            region=config.get("STORAGE_REGION"),
         )
     raise ConfigError(f"unknown STORAGE_BACKEND {backend!r}")
 

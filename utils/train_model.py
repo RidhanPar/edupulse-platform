@@ -15,6 +15,7 @@ from sklearn.tree import DecisionTreeClassifier
 from sklearn.svm import SVC
 
 from utils.preprocessing import available_features, build_preprocessing_pipeline, split_features_target
+from utils.signing import sign
 
 
 @dataclass
@@ -116,8 +117,8 @@ def train_and_select_best(df: pd.DataFrame) -> TrainingArtifacts:
     )
 
 
-def serialize_model(model: Pipeline) -> bytes:
-    """Bytes for object storage; utils.predict.load_model reverses this."""
+def serialize_model(model: Pipeline, signing_key: str) -> bytes:
+    """Signed bytes for object storage; utils.predict.load_model verifies and reverses this."""
     buffer = io.BytesIO()
     joblib.dump(model, buffer)
-    return buffer.getvalue()
+    return sign(buffer.getvalue(), signing_key)

@@ -12,6 +12,24 @@ permissions:
 jobs:
   test:
     runs-on: ubuntu-latest
+    # Migrations, enum types and the audit trigger behave differently on PostgreSQL than
+    # on SQLite, so tests/test_postgres.py runs against the same major version as production.
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: edupulse_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      TEST_POSTGRES_URL: postgresql://postgres:postgres@localhost:5432/edupulse_test
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -20,4 +38,4 @@ jobs:
           cache: pip
       - run: python -m pip install -r requirements-dev.txt
       - run: python -m pytest -q
-      - run: python -m compileall app.py config.py wsgi.py auth db migrations utils tests
+      - run: python -m compileall app.py config.py wsgi.py auth db migrations scripts utils tests

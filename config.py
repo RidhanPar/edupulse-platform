@@ -14,6 +14,14 @@ LOCAL_ENVS = {"development", "testing"}
 
 STORAGE_BACKENDS = ("local", "s3")
 S3_SETTINGS = ("STORAGE_ENDPOINT", "STORAGE_BUCKET", "STORAGE_ACCESS_KEY", "STORAGE_SECRET_KEY")
+
+# Everything production refuses to start without. render.yaml must declare each one
+# (tests/test_deployment.py checks), so a deploy cannot be missing a variable.
+PRODUCTION_REQUIRED = ("FLASK_SECRET_KEY", "DATABASE_URL", "MODEL_SIGNING_KEY", "STORAGE_BACKEND", *S3_SETTINGS)
+
+# Signs models in development and tests only, so local models survive a restart.
+# Production refuses to start without its own MODEL_SIGNING_KEY.
+DEVELOPMENT_MODEL_SIGNING_KEY = "development-only-model-signing-key-never-used-in-production"
 DEFAULT_LOCAL_STORAGE_ROOT = Path(__file__).resolve().parent / "var" / "storage"
 
 # OWASP's recommended Argon2id parameters (19 MiB, 2 iterations, 1 lane): strong, and
@@ -72,6 +80,15 @@ def build_config(env: str) -> dict:
     if db_url is None:
         missing.append("DATABASE_URL")
 
+    # Separate from FLASK_SECRET_KEY on purpose: rotating the session secret must never
+    # make stored models unloadable. See utils/signing.py.
+    model_signing_key = _env("MODEL_SIGNING_KEY")
+    if not model_signing_key:
+        if env in LOCAL_ENVS:
+            model_signing_key = DEVELOPMENT_MODEL_SIGNING_KEY
+        else:
+            missing.append("MODEL_SIGNING_KEY")
+
     # The same applies to uploaded files and model artifacts.
     storage_backend = _env("STORAGE_BACKEND").lower() or ("local" if env in LOCAL_ENVS else "")
     if not storage_backend:
@@ -101,6 +118,10 @@ def build_config(env: str) -> dict:
         "STORAGE_BACKEND": storage_backend,
         "STORAGE_LOCAL_ROOT": _env("STORAGE_LOCAL_ROOT") or str(DEFAULT_LOCAL_STORAGE_ROOT),
         **{name: _env(name) for name in S3_SETTINGS},
+        "STORAGE_REGION": _env("STORAGE_REGION"),
+        # Current key first; a previous key keeps older models loadable during rotation.
+        "MODEL_SIGNING_KEYS": [key for key in (model_signing_key, _env("MODEL_SIGNING_KEY_PREVIOUS")) if key],
+        "LOG_LEVEL": _env("LOG_LEVEL").upper() or "INFO",
         # Server-side sessions (auth.sessions): the cookie carries only a random id.
         "SESSION_COOKIE_SECURE": True,
         "SESSION_COOKIE_HTTPONLY": True,

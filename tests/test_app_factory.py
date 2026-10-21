@@ -12,7 +12,8 @@ from utils.storage import LocalStorage, S3Storage
 
 ROOT = Path(__file__).resolve().parents[1]
 S3_VARS = ("STORAGE_ENDPOINT", "STORAGE_BUCKET", "STORAGE_ACCESS_KEY", "STORAGE_SECRET_KEY")
-CONFIG_VARS = ("FLASK_ENV", "FLASK_SECRET_KEY", "DATABASE_URL", "STORAGE_BACKEND", "STORAGE_LOCAL_ROOT", *S3_VARS)
+CONFIG_VARS = ("FLASK_ENV", "FLASK_SECRET_KEY", "DATABASE_URL", "STORAGE_BACKEND", "STORAGE_LOCAL_ROOT",
+               "MODEL_SIGNING_KEY", "MODEL_SIGNING_KEY_PREVIOUS", *S3_VARS)
 
 
 @pytest.fixture()
@@ -25,6 +26,7 @@ def clean_env(monkeypatch):
 def _set_production_env(monkeypatch, *, skip=()):
     values = {
         "FLASK_SECRET_KEY": "k" * 64,
+        "MODEL_SIGNING_KEY": "m" * 64,
         "DATABASE_URL": "sqlite://",
         "STORAGE_BACKEND": "s3",
         "STORAGE_ENDPOINT": "https://s3.us-east-1.amazonaws.com",
